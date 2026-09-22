@@ -1,9 +1,8 @@
 # HyperMemory plugin for ChatGPT and Codex
 
-This universal plugin bundles a ChatGPT/Codex main-agent skill, a parent-only
+This universal plugin bundles a ChatGPT/Codex main-agent skill, a post-response
 memory-writer skill with a strict quality gate, the OAuth-protected HyperMemory
-MCP server, and Codex lifecycle enforcement. The writer has separate
-token-reporting branches for ChatGPT and Codex.
+MCP server, and Codex lifecycle enforcement. Token reporting requires an exact supported usage source.
 
 ## Behavior
 
@@ -11,18 +10,29 @@ token-reporting branches for ChatGPT and Codex.
   when keys are known, and a relevance gate that rejects unrelated projects and
   session-only relationships. Narrow standalone greetings and acknowledgements
   skip retrieval.
-- Memory-writer sub-agent: a fresh, turn-unique worker created without parent
-  conversation history applies a durability gate, performs only justified graph
-  changes, validates every changed node, writes one timeline entry, and reports
-  tokens once. The parent never waits for, polls, messages, or reads the worker.
-- Codex: trusted hooks enforce the lifecycle and read exact cumulative token
-  counters from the active rollout JSONL using a two-phase inspect/ack helper.
-  If local lifecycle preparation fails, the hook reports the problem and fails
-  open so it cannot block the user's chat. Its command resolves the currently
-  installed plugin version at execution time, so a running task does not retain
-  an executable path into a deleted previous-version cache directory.
-- ChatGPT: reports an uncertainty-labelled workload estimate because consumer
-  ChatGPT does not expose a stable local exact-usage file to plugins.
+  Overview (once per conversation) and recall must finish before substantive
+  task work and the answer. The prompt hook instructs the agent to make these
+  calls; instruction tests do not prove the model obeys their ordering.
+- Codex main agent: stages a bounded local contract and delivers its answer.
+  It does not launch a memory-writing agent.
+- Completion hook: after the final answer exists, starts a bounded background
+  handler. It invokes the memory writer only for durable candidates or an
+  explicit memory instruction. The writer reconciles the actual answer, applies
+  the durability gate, writes justified changes, and verifies them.
+  Its recall is limited to checking existing memories and conflicts before a
+  write. Overview is excluded from the completion transport's enabled tools.
+- Bookkeeping: timeline and exact token reports use direct authenticated MCP
+  calls through `codex app-server`; they do not invoke a model. The private
+  ephemeral session reuses Codex OAuth without extracting credentials. Recursive
+  hooks and unrelated tools are disabled in that session only.
+- Two Codex hooks remain: `UserPromptSubmit` and `Stop`. The first prompt
+  establishes the token baseline once per session; no `SessionStart` hook runs.
+  HyperMemory use is not forced silent.
+- Codex hooks remain subject to normal trust. No hook blocks Stop, resumes the
+  parent, or adds a second response. Version-safe hook commands continue to
+  resolve the currently installed scripts.
+- A surface without exact usage reports that limitation; no token estimate is
+  substituted.
 
 The token listener parses only `token_count` records. It does not return or
 upload prompts, model responses, tool arguments, or tool results.
@@ -32,10 +42,22 @@ total. Stable rollout identities prevent archived transcripts from being
 counted twice, and an implausible fresh-token spike is rejected before it can
 reach `hm_tokens`.
 
-Codex cannot observe tokens produced after the final tool call of a turn. The
-listener carries that exact tail into the next successful report. If a session
-never receives another turn, its final tail remains unreported; the plugin does
-not falsely label a guess as client-exact.
+The finalizer consumes a bounded public-answer excerpt from Stop, separately
+from token counters. Local handoffs are private (0600); successful completion
+removes the excerpt and contract. Duplicate completion events cannot start two
+handlers. Missing handoffs produce no invented memories. Unknown completion
+formats remain pending, and partial or ambiguous writes require review.
+
+The completion handler is a finite per-turn process, not a permanent daemon.
+It requires the native `codex` executable and existing HyperMemory OAuth login.
+Only the worker receives the completed evidence. The parent never waits or
+polls. Stop is the sole completion source; no transcript or legacy route is used.
+
+Memory, timeline and token writes record independent receipts or exact errors.
+A failure cannot suppress the other operations. Missing exact counters fail the
+token operation; no estimates, invented handoffs or substitute categories are used.
+The writer reports native model usage under its own session and actual model.
+Partial or ambiguous results are retained for review and are not replayed.
 
 ## Install from the public Git marketplace
 

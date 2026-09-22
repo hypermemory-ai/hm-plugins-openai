@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Silent Codex lifecycle bridge for mandatory HyperMemory behavior.
+"""Codex lifecycle bridge for mandatory HyperMemory behavior.
 
 The hook classifies lightweight prompts, prepares token-listener jobs before
-model work, and injects concise hidden developer context. It never blocks Stop,
-creates continuation prompts, or reads conversation content from the transcript.
+model work, and injects concise hidden developer context. Stop captures the final
+answer and starts a bounded completion handler without continuing the parent.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
 import sys
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -53,24 +54,19 @@ def _plugin_root() -> Path:
 
 def _plugin_data() -> Path:
     configured = os.environ.get("PLUGIN_DATA")
-    path = (
-        Path(configured).resolve()
-        if configured
-        else Path(tempfile.gettempdir()) / "hypermemory-plugin-data"
-    )
+    if not configured:
+        raise ValueError("PLUGIN_DATA is required")
+    path = Path(configured).resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _safe_id(value: object, fallback: str) -> str:
-    text = str(value or fallback)
-    return "".join(char if char.isalnum() or char in "-_" else "_" for char in text)[:160]
-
-
-def _agent_task_name(turn_id: object) -> str:
-    """Return a unique collaboration task name accepted by Codex."""
-    safe_turn = _safe_id(turn_id, "unknown-turn").replace("-", "_")
-    return f"memory_writer_{safe_turn}"[:160]
+def _safe_id(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 160:
+        raise ValueError("an exact session or turn identifier is required")
+    if any(not (char.isalnum() or char in "-_") for char in value):
+        raise ValueError("unsupported characters in session or turn identifier")
+    return value
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -83,79 +79,66 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _context(event: str, text: str) -> None:
+def _context(event: str, text: str, notice: str | None = None) -> None:
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": event,
                     "additionalContext": text,
-                }
+                },
+                **({"systemMessage": notice} if notice else {}),
             }
         )
     )
 
 
-def _fail_open(event: str, exc: Exception) -> int:
-    """Keep the user's turn available when local lifecycle preparation fails."""
-    print(f"HyperMemory hook degraded: {type(exc).__name__}: {exc}", file=sys.stderr)
-    hook_event = "SessionStart" if event == "session-start" else "UserPromptSubmit"
-    _context(
-        hook_event,
-        "HyperMemory lifecycle preparation was unavailable for this event. "
-        "Continue the user's request without blocking the turn. Apply the "
-        "HyperMemory skill directly if it is available, and do not claim that "
-        "local lifecycle or token preparation succeeded.",
-    )
-    return 0
+def _completed_failure_notice(data_dir: Path) -> str | None:
+    """Announce finished failures once; never inspect a running handler."""
+    from codex_token_listener import _read_json, _state_lock
+
+    notices = []
+    for path in sorted((data_dir / "finalization").glob("*.json")):
+        with _state_lock(path):
+            entry = _read_json(path)
+            if entry.get("status") != "needs_review" or entry.get("failure_announced"):
+                continue
+            details = []
+            for phase, result in entry.get("phases", {}).items():
+                if result.get("status") == "failed":
+                    details.append(f"{phase}: {result.get('message', '')[:400]}")
+                if result.get("result", {}).get("checkpoint") == "failed":
+                    details.append(f"{phase}: remote write accepted, local checkpoint failed")
+            if not details:
+                details.append(f"recorded failure: {entry.get('failure_type', entry.get('reason', 'needs_review'))}")
+            notices.append(f"turn {entry['turn_id']}: " + "; ".join(details))
+            entry["failure_announced"] = True
+            _atomic_json(path, entry)
+        if len(notices) == 3:
+            break
+    return "HyperMemory persistence failed — " + " | ".join(notices) if notices else None
 
 
-def session_start(payload: dict[str, Any]) -> int:
-    session_id = _safe_id(payload.get("session_id"), "unknown-session")
-    state_file = _plugin_data() / "token-state.json"
-    baseline = {
-        "version": 1,
-        "session_id": session_id,
-        "transcript_path": payload.get("transcript_path"),
-        "state_file": str(state_file),
-    }
-    baseline_path = _plugin_data() / "jobs" / f"baseline-{session_id}.json"
-    _atomic_json(baseline_path, baseline)
-
-    # Baseline synchronously so installation never uploads historical usage.
-    listener = _plugin_root() / "scripts" / "codex_token_listener.py"
-    if listener.exists():
-        import subprocess
-
-        subprocess.run(
-            [sys.executable, str(listener), "baseline", "--job", str(baseline_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
-    _context(
-        "SessionStart",
-        "HyperMemory is active. Follow the HyperMemory skill and each turn's "
-        "prompt classification. Do not recall solely because the session started. "
-        "Memory-writers are fire-and-forget: dispatch once, never wait or poll.",
-    )
-    return 0
+def _hook_error(event: str, exc: Exception) -> int:
+    message = f"HyperMemory {event} failed: {type(exc).__name__}: {exc}"
+    print(message, file=sys.stderr)
+    print(json.dumps({"systemMessage": message}))
+    return 1
 
 
 def _turn_job(payload: dict[str, Any]) -> tuple[Path, Path]:
-    session_id = _safe_id(payload.get("session_id"), "unknown-session")
-    turn_id = _safe_id(payload.get("turn_id"), "unknown-turn")
+    session_id = _safe_id(payload.get("session_id"))
+    turn_id = _safe_id(payload.get("turn_id"))
     data_dir = _plugin_data()
     job_path = data_dir / "jobs" / f"turn-{session_id}-{turn_id}.json"
     job = {
         "version": 1,
+        "lifecycle": "post_response",
         "created_at": datetime.now(UTC).isoformat(),
         "session_id": str(payload.get("session_id") or session_id),
         "turn_id": str(payload.get("turn_id") or turn_id),
         "transcript_path": payload.get("transcript_path"),
-        "model": str(payload.get("model") or "unknown"),
+        "model": payload.get("model"),
         "state_file": str(data_dir / "token-state.json"),
     }
     _atomic_json(job_path, job)
@@ -164,52 +147,77 @@ def _turn_job(payload: dict[str, Any]) -> tuple[Path, Path]:
 
 def user_prompt(payload: dict[str, Any]) -> int:
     listener, job_path = _turn_job(payload)
-    writer_task = _agent_task_name(payload.get("turn_id"))
+    sys.path.insert(0, str(listener.parent))
+    from codex_token_listener import baseline
+
+    # First prompt establishes the session baseline; later prompts preserve it.
+    with contextlib.redirect_stdout(io.StringIO()):
+        baseline(job_path)
+    notice = _completed_failure_notice(_plugin_data())
     lightweight = _is_lightweight_prompt(_prompt_text(payload))
     recall_instruction = (
         "mode=lightweight; skip hm_get_overview and hm_recall on the main agent."
         if lightweight
         else "mode=substantive; call hm_recall before substantive work and call "
-        "hm_get_overview first if it has not run in this conversation."
+        "hm_get_overview first if it has not run in this conversation. "
+        "Complete these reads before investigating the task or composing the substantive answer. "
+        "Use relevant results in that answer. Do not defer answer-context retrieval to Stop "
+        "or count a background writer's later recall as satisfying this requirement."
     )
     _context(
         "UserPromptSubmit",
         f"HyperMemory turn: {recall_instruction}\n"
-        "Apply the HyperMemory skill. Keep graph writes and telemetry "
-        "off the main agent. "
-        "Before the final response, spawn exactly one fresh memory-writer with "
-        f"task_name={writer_task}, fork_turns=\"none\", a bounded turn summary, "
-        "and explicit use of the $memory-writer skill. Pass:\n"
-        f"listener={listener}\njob={job_path}\n"
-        "Fire-and-forget: after spawn succeeds, do not wait, poll, inspect, read, "
-        "message, or otherwise synchronize with the writer; return the final "
-        "response immediately.",
+        "Apply the HyperMemory skill. Keep telemetry off the main agent. Keep graph "
+        "writes off the main agent unless the user explicitly requests a memory "
+        "mutation. When they do, perform it directly; for multi-node writes, create "
+        "nodes before relationships and report only actual tool results. Do not "
+        "duplicate completed direct mutations in the local handoff. Do not spawn a "
+        "memory-writer. Stage a bounded local turn contract "
+        "using codex_turn_finalizer.py enqueue --job with JSON on stdin; this "
+        "does not start an agent or write remote memory. Include supported durable "
+        "candidates covering useful user facts, corrections, decisions and outcomes, "
+        "a concise timeline_summary, and activity_segments totalling 100. "
+        "Use only categories: reasoning, memory, context, doc_processing, automation, "
+        "personal, chatting, research, design, calculations, coding, planning, "
+        "productivity, writing, unmatched. Do not hide HyperMemory use or failures. "
+        "Then deliver your answer. The Stop hook owns "
+        "all post-response processing and starts a writer only for candidate "
+        "memories or an explicit memory instruction. Do not wait or poll.\n"
+        f"finalizer={listener.with_name('codex_turn_finalizer.py')}\n"
+        f"listener={listener}\njob={job_path}\n",
+        notice=notice,
     )
     return 0
 
 
 def stop(payload: dict[str, Any]) -> int:
-    # Kept as a backwards-compatible no-op for already-running sessions whose
-    # hook registry still references the old Stop command. Never emit a block
-    # reason: Codex turns one into a visible synthetic user continuation.
-    del payload
+    # The parent answer exists before a completion handler can be dispatched.
+    sys.path.insert(0, str(_plugin_root() / "scripts"))
+    from codex_completion_worker import dispatch
+    from codex_turn_finalizer import record_stop
+
+    record_stop(_plugin_data(), payload)
+    session = _safe_id(payload.get("session_id"))
+    turn = _safe_id(payload.get("turn_id"))
+    job_path = _plugin_data() / "jobs" / f"turn-{session}-{turn}.json"
+    if not job_path.is_file():
+        raise ValueError("completed turn is missing its prompt-hook job")
+    dispatch(job_path, _plugin_root())
     print(json.dumps({"continue": True}))
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("event", choices=("session-start", "user-prompt", "stop"))
+    parser.add_argument("event", choices=("user-prompt", "stop"))
     args = parser.parse_args()
     try:
         payload = _read_input()
-        if args.event == "session-start":
-            return session_start(payload)
         if args.event == "user-prompt":
             return user_prompt(payload)
         return stop(payload)
     except Exception as exc:
-        return _fail_open(args.event, exc)
+        return _hook_error(args.event, exc)
 
 
 if __name__ == "__main__":

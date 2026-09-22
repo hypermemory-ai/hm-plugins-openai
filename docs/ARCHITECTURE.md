@@ -14,8 +14,8 @@ flowchart TD
     HM --> HMM[".codex-plugin/plugin.json"]
     HM --> HMMCP["Hosted OAuth MCP"]
     HM --> HMSkill["Slim main-agent skill"]
-    HM --> HMWRole["Parent-only memory-writer skill + detailed role"]
-    HM --> HMHooks["Silent session and prompt hooks"]
+    HM --> HMWRole["Post-response memory-writer skill + detailed role"]
+    HM --> HMHooks["Prompt and completion hooks"]
     HM --> HMToken["Exact Codex token listener"]
 
     HC --> HCM[".codex-plugin/plugin.json"]
@@ -31,33 +31,58 @@ flowchart TD
 sequenceDiagram
     participant U as User
     participant M as Main agent
+    participant Q as Local completion queue
+    participant H as Completion handler
+    participant W as Memory writer
     participant MCP as HyperMemory MCP
-    participant W as Memory-writer sub-agent
-    participant L as Codex token listener
 
-    U->>M: Prompt
-    M->>MCP: overview + recall
-    MCP-->>M: Relevant graph context
-    M->>M: Perform the requested work
-    M-)W: Bounded finalization summary
-    M-->>U: Final response without waiting
-    W->>MCP: recall, store/update, timeline
-    W->>L: inspect exact counter delta
-    L-->>W: hm_tokens payload
-    W->>MCP: one token report
-    W->>L: acknowledge accepted claim
+    U->>M: Submit a prompt
+    M->>MCP: Recall relevant context
+    M->>M: Complete requested work
+    M->>Q: Stage bounded evidence (no agent)
+    M-->>U: Deliver final answer
+    Q->>H: Stop captures the completed answer
+    H->>Q: Claim this completed turn once
+    alt Durable candidates or explicit memory instruction
+        H->>W: Supply completed evidence
+        W->>MCP: Recall, apply durability gate, write and verify
+        W-->>H: Structured outcome
+    end
+    H->>MCP: Timeline and exact tokens (no model)
+    H->>Q: Acknowledge and remove private evidence
 ```
 
-Recall remains on the main agent because it changes how the task is understood.
-Persistence and telemetry are delegated so they do not crowd the main context.
-The prompt hook creates the token-listener job and supplies its path as hidden
-developer context. The skill finalizes before the user-facing response. No
-blocking Stop hook or synthetic user continuation is used.
+The main agent recalls context and stages a small local contract. It never
+starts a writer during the Codex turn. The Stop hook launches a bounded handler
+only after the public answer exists. That handler invokes a fresh ephemeral
+Codex memory session only for candidate durable work or explicit memory requests.
+The writer must process every supported candidate or report the exact unresolved
+reason. A duplicate is hydrated and verified; it is not silently discarded.
+Bookkeeping uses authenticated MCP calls directly and never needs a model.
 
-The token listener reads only `session_meta` and `token_count` records from the
-logical Codex session's parent and sub-agent rollouts. Its inspect/ack protocol
-does not advance the checkpoint until the MCP accepts the report. Tokens that
-appear after inspection roll into the next successful report.
+The native transport uses `codex app-server` and the existing Codex OAuth store;
+it does not extract credentials or require an API key. Its private ephemeral
+session has recursive hooks and unrelated tools disabled. It neither resumes
+the parent nor adds a user-facing task or response. The handler has a finite
+runtime, and ambiguous remote failures are held for review instead of replayed.
+
+The prompt hook prepares a token job and instructs the main agent to stage a
+bounded contract. The Stop hook captures only its public final answer. It never
+blocks with a synthetic continuation. The first prompt establishes the session
+usage baseline once. There is no `SessionStart` hook or alternate completion
+source; jobs use `lifecycle: post_response`.
+
+Completion claims are exclusive. Repeated Stop events cannot start a second
+handler. Missing handoffs create no candidate memories. Partial remote failures
+retain private evidence with `needs_review` status. Completed jobs discard the
+answer and contract. Unsupported completion formats fail closed.
+
+The token listener parses only counters and session identities. Direct logging
+runs even with no memory candidates. Exact inspect/send/ack operations are
+serialized per session. Missing exact counters fail explicitly. Memory, timeline
+and parent token phases use independent connections and preserve their receipts,
+so one failure cannot suppress the others. Background model usage is reported
+separately under its actual model and session using native token notifications.
 
 ## HyperColab lifecycle
 
@@ -103,8 +128,9 @@ environment.
 The current OpenAI plugin manifest supports skills, MCP servers, apps, hooks,
 and presentation assets; it does not define a separate auto-installed custom
 agent registry. HyperMemory therefore exposes a slim implicit main skill and a
-second parent-only `$memory-writer` skill whose implicit invocation is disabled.
-The main skill passes that writer skill to a fresh host sub-agent:
+second `$memory-writer` skill whose implicit invocation is disabled.
+On Codex, the completion handler passes it only to a fresh background session
+with candidate durable work. Other supported hosts can delegate bounded work:
 
 - `plugins/hypermemory/agents/memory-writer.md` defines HyperMemory finalization;
   `$memory-writer` points hosts to that canonical contract.

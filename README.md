@@ -194,11 +194,14 @@ knowledge after the requested work is complete.
 | --- | --- | --- |
 | Plugin manifest | `plugins/hypermemory/.codex-plugin/plugin.json` | Identity, version, discovery metadata, branding, skill path, and MCP declaration |
 | MCP configuration | `plugins/hypermemory/.mcp.json` | Connects to the hosted staging MCP over HTTP |
-| Main-agent skill | `plugins/hypermemory/skills/hypermemory/` | Defines recall and fire-and-forget delegation behavior |
-| Memory-writer skill | `plugins/hypermemory/skills/memory-writer/` | Parent-only finalization workflow with implicit invocation disabled |
-| Lifecycle hooks | `plugins/hypermemory/hooks/hooks.json` | Silently prepares recall context and per-turn telemetry jobs before model work |
-| Memory-writer role | `plugins/hypermemory/agents/memory-writer.md` | Parent-only agent entry point that loads the versioned memory-writer skill |
-| Hook bridge | `plugins/hypermemory/scripts/hypermemory_hook.py` | Creates hidden lifecycle context and bounded finalization jobs without Stop continuations |
+| Main-agent skill | `plugins/hypermemory/skills/hypermemory/` | Defines recall and bounded local handoffs |
+| Memory-writer skill | `plugins/hypermemory/skills/memory-writer/` | Post-response durable graph work with implicit invocation disabled |
+| Lifecycle hooks | `plugins/hypermemory/hooks/hooks.json` | Requests recall and prepares per-turn telemetry jobs before model work |
+| Memory-writer role | `plugins/hypermemory/agents/memory-writer.md` | Completion-worker role that loads the versioned memory-writer skill |
+| Hook bridge | `plugins/hypermemory/scripts/hypermemory_hook.py` | Prepares jobs and captures the public answer at Stop without continuations |
+| Turn finalizer | `plugins/hypermemory/scripts/codex_turn_finalizer.py` | Gates writes on completed answers, queues retries, and prevents duplicate claims |
+| Completion worker | `plugins/hypermemory/scripts/codex_completion_worker.py` | Dispatches only after completion, gates the writer, and logs without a model |
+| Native transport | `plugins/hypermemory/scripts/codex_memory_transport.py` | Reuses Codex OAuth in an ephemeral background session |
 | Token listener | `plugins/hypermemory/scripts/codex_token_listener.py` | Reads exact local Codex token-counter deltas without reading chat content |
 
 ### Turn lifecycle
@@ -207,33 +210,39 @@ knowledge after the requested work is complete.
 sequenceDiagram
     participant U as User
     participant M as Main agent
+    participant Q as Local completion queue
+    participant H as Completion handler
+    participant W as Memory writer
     participant MCP as HyperMemory MCP
-    participant W as Memory-writer sub-agent
-    participant L as Codex token listener
 
     U->>M: Submit a prompt
-    M->>MCP: Overview and recall for substantive prompts
-    MCP-->>M: Relationship-aware context
-    M->>M: Complete the requested work
-    M-)W: Dispatch a concise finalization summary
-    M-->>U: Return final response without waiting
-    W->>MCP: Recall before writing
-    W->>MCP: Store or update durable knowledge
-    W->>MCP: Write one timeline entry
-    W->>L: Inspect token-counter delta
-    L-->>W: Exact payload or fallback instruction
-    W->>MCP: Report tokens once
-    W->>L: Acknowledge accepted exact claim
+    M->>MCP: Recall relevant context
+    M->>M: Complete requested work
+    M->>Q: Stage bounded evidence (no agent)
+    M-->>U: Deliver final answer
+    Q->>H: Stop captures the completed answer
+    H->>Q: Claim this completed turn once
+    alt Durable candidates or explicit memory instruction
+        H->>W: Supply completed evidence
+        W->>MCP: Recall, apply durability gate, write and verify
+        W-->>H: Structured outcome
+    end
+    H->>MCP: Timeline and exact tokens (no model)
+    H->>Q: Acknowledge and remove private evidence
 ```
 
-The main agent performs recall for substantive prompts because remembered
-context must be available while reasoning about the user's request. Narrow,
-standalone greetings and acknowledgements skip retrieval. Persistence and
-telemetry move to one fire-and-forget memory-writer sub-agent so they do not
-delay the user-facing response. Each turn uses a fresh, turn-unique writer with
-`fork_turns="none"`; reusing a writer or copying the full parent history would
-repeatedly charge that context during tool continuations. The role contract
-prevents recursive delegation.
+The main agent recalls context and stages a small local contract. It never
+starts a writer during the Codex turn. The Stop hook launches a bounded handler
+only after the public answer exists. That handler invokes a fresh ephemeral
+Codex memory session only for candidate durable work or explicit memory requests.
+The writer may still reject all candidates after seeing the finished answer.
+Bookkeeping uses authenticated MCP calls directly and never needs a model.
+
+The native transport uses `codex app-server` and the existing Codex OAuth store;
+it does not extract credentials or require an API key. Its private ephemeral
+session has recursive hooks and unrelated tools disabled. It neither resumes
+the parent nor adds a user-facing task or response. The handler has a finite
+runtime, and ambiguous remote failures are held for review instead of replayed.
 
 This coordination is deliberately invisible in normal use. HyperMemory does
 not emit status messages, inject synthetic user prompts, or append memory
@@ -298,7 +307,7 @@ session's parent and memory-writer rollouts. It does not return or upload:
 Reporting uses a two-phase inspect/ack protocol:
 
 1. Inspect computes the delta since the last acknowledged checkpoint.
-2. The memory-writer sends that payload to `hm_tokens` exactly once.
+2. The completion handler sends that payload to `hm_tokens` exactly once.
 3. Ack advances the checkpoint only after the MCP accepts the report.
 
 Cached input is reported separately in `cache_tokens`; it is excluded from
@@ -308,30 +317,40 @@ a transcript into the archive cannot replay its cumulative counter. A bounded
 fresh-token safety limit rejects implausible per-turn spikes instead of sending
 them as exact usage.
 
-If reporting fails, the checkpoint does not advance and usage remains eligible
-for a later retry. Tokens generated after the final inspection are carried into
+If reporting fails, the checkpoint does not advance; ambiguous remote effects
+require review before any replay. If exact counters are unavailable, reporting
+is marked failed with the exact reason; no estimate is fabricated. The ephemeral
+writer’s native usage is reported under its own session and actual model. Tokens generated after the final inspection are carried into
 the next successful report. If the session has no later turn, that final tail
 can remain unreported; the plugin never labels a guess as client-exact to hide
 this host limitation.
 
-Consumer ChatGPT does not expose Codex's local rollout counters. On that
-surface, HyperMemory reports an uncertainty-labelled estimate instead of
-claiming exact or provider-actual usage.
+Consumer ChatGPT does not expose Codex's local rollout counters. Without a
+supported exact usage source, token reporting is unavailable; no estimate is substituted.
 
 ### Always-on behavior and its boundary
 
 HyperMemory uses three complementary layers:
 
 1. The skill declares itself applicable on every turn.
-2. Session and prompt hooks privately remind the active agent to recall and
-   prepare the current turn's token-listener job.
-3. The skill requires delegated memory finalization before the response is
-   released; no blocking `Stop` continuation is used.
+2. `UserPromptSubmit` requests recall and prepares the token-listener job. Its
+   first invocation establishes the session baseline. There is no HyperMemory
+   `SessionStart` hook and no instruction to conceal HyperMemory use.
+3. The main agent stages bounded evidence. Stop captures the final answer,
+   then dispatches the completion handler. Empty durable work skips the model
+   writer; timeline and token bookkeeping run independently. Duplicate completion
+   events cannot dispatch twice, and partial remote writes require review.
+
+The completion helper reads a bounded excerpt of the final public answer,
+separately from token telemetry. It uses a matching parent `task_complete` event
+for existing sessions whose hook registry lacks Stop. The transcript format is
+not a stable API; unknown events leave jobs pending. Completed jobs remove local
+answer excerpts and contracts, retaining only a duplicate-prevention marker.
 
 This is the strongest enforcement available to an installed plugin, but it is
 not an operating-system guarantee. If the plugin is disabled, its hooks are not
 trusted, hooks are disabled by policy, the MCP is unavailable, or the current
-surface cannot spawn sub-agents, behavior degrades accordingly. The skill
+surface cannot run the native Codex completion worker, behavior degrades accordingly. The skill
 keeps recall available when possible and does not claim that background
 persistence occurred when delegation is unavailable.
 
@@ -533,7 +552,8 @@ root according to the Codex plugin package layout.
 
 Each plugin contains an `agents/` role contract and a matching skill reference:
 
-- HyperMemory uses `memory-writer` for storage, timeline, and telemetry.
+- HyperMemory uses `memory-writer` for durable graph work after completion;
+  deterministic Codex bookkeeping owns timeline and telemetry.
 - HyperColab uses `coordination-writer` for project activity maintenance.
 
 These files document the bounded role that the skill asks the host to spawn.
@@ -637,7 +657,7 @@ The tests cover:
 
 - catalog-to-plugin path and identity consistency;
 - required manifests, MCP declarations, hooks, skills, and assets;
-- HyperMemory prompt classification and fire-and-forget writer delegation;
+- HyperMemory prompt classification, completion-triggered dispatch, and empty-work skipping;
 - exact token aggregation and two-phase checkpointing;
 - HyperColab hook behavior, Git discovery, cached leases, and queued events;
 - logo format and dimensions; and
@@ -769,9 +789,8 @@ executing directly from an arbitrary source checkout.
 ### Exact token reporting is unavailable
 
 Exact reporting requires a local Codex rollout with `token_count` records and a
-working inspect/ack job. When those counters are unavailable, the memory writer
-submits one uncertainty-labelled estimate instead. Consumer ChatGPT always uses
-the estimated path.
+working inspect/ack job. Missing counters cause an explicit failure; the plugin
+does not substitute estimates. The other persistence operations still run.
 
 ## Frequently asked questions
 

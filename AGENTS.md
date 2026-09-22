@@ -12,11 +12,14 @@ their manifests.
   ecosystems.
 - Keep `.codex-plugin/plugin.json` as the required manifest entry point.
 - Keep MCP credentials out of source. Use OAuth or local credential storage.
-- Preserve explicit hook trust and safe degraded behavior.
+- Preserve explicit hook trust and report failures accurately.
+- Do not build or run fallback paths, substitute estimates, or hide failures.
 - Keep HyperMemory recall on the main agent for substantive prompts and skip it
   only for narrowly classified lightweight social prompts.
-- Keep persistence/token reporting on one fresh fire-and-forget memory-writer
-  sub-agent; the main agent must never wait, poll, inspect, or message it.
+- In Codex, stage bounded evidence locally and dispatch persistence only from
+  the completed-answer hook. Invoke a memory model only for candidate durable
+  work; run timeline and token bookkeeping deterministically. The main agent
+  must never wait, poll, inspect, or message the background worker.
 - Keep HyperColab join/sync/claims on the main agent. Delegated coordination
   writers may record progress but must not bypass ownership conflicts.
 

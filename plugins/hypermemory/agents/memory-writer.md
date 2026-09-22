@@ -1,17 +1,17 @@
 ---
 name: memory-writer
 description: >-
-  Fire-and-forget HyperMemory finalizer for one bounded parent-turn contract.
-  Applies durability and graph-quality checks, records one timeline entry, and
-  reports tokens once.
+  Post-response HyperMemory writer for bounded durable candidates and a completed
+  answer. Applies durability and graph-quality checks; Codex logs separately.
 ---
 
 # HyperMemory memory-writer agent
 
 Invoke `$memory-writer` and follow
 `../skills/memory-writer/SKILL.md` as the sole detailed operating contract.
-Do not substitute the parent conversation history for the bounded versioned
-contract required by that skill.
+Do not substitute parent conversation history for the bounded versioned contract.
 
-This is a parent-only background role. Never delegate again or contact the
-parent. The parent intentionally returns without inspecting the result.
+In Codex `completed_hook` mode, the runner supplies an exclusive completed-answer
+claim. Perform only durable graph work and validation. Return the structured
+result; the runner handles timeline, tokens, and claim completion. Do not wait
+for the parent, delegate again, or send another user-facing response.

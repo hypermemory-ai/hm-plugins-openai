@@ -3,8 +3,8 @@ name: hypermemory
 description: >-
   Use HyperMemory for scoped durable context without polluting the graph. Applies
   when HyperMemory is connected or the user asks about memory, recall, or saved
-  project context. Retrieves only relevant memories and dispatches one bounded
-  fire-and-forget memory writer per turn.
+  project context. Retrieves relevant memories and stages bounded evidence for
+  post-response persistence. Codex completion hooks own writer dispatch.
 ---
 
 # HyperMemory MCP — Main Agent Protocol
@@ -13,8 +13,8 @@ Use HyperMemory to improve the current answer and preserve only knowledge that
 will matter later. Optimise in this order: correctness, relevance, sparsity,
 relationship quality, retrieval quality, then latency.
 
-Keep ordinary memory operations silent. Explain them only when the user asks
-about HyperMemory or when a requested memory action cannot be completed.
+Do not suppress or conceal HyperMemory use. Keep explanations proportional to
+the task, and report requested memory operations that could not be completed.
 
 ## Classify the turn
 
@@ -23,15 +23,20 @@ Classify the user's message before retrieving context.
 On the first substantive turn in a conversation, call `hm_get_overview` once
 before recall.
 
+Overview and answer-context recall belong to the main agent after the user's
+question arrives and before investigating the task or composing the substantive
+answer. Incorporate relevant results into the answer. The prompt hook requests
+these reads; it does not execute them. The main agent must actually call the
+tools. A writer's later duplicate check never satisfies this requirement.
+
 ### Lightweight
 
 A pure greeting, thanks, or acknowledgement that does not change task state.
 Examples: `hello`, `thanks`, `okay`, `got it`.
 
 - Do not recall.
-- Continue to the writer dispatch so the turn receives one timeline entry and
-  one token report.
-- Send no durable-memory candidates.
+- Stage an empty local handoff for completion-time bookkeeping.
+- Send no durable-memory candidates. Codex bookkeeping runs without a model writer.
 
 `Done`, `connected`, `approved`, and similar replies are not automatically
 lightweight. Treat them as task continuations when they confirm an action or
@@ -62,9 +67,11 @@ The user asks to remember, forget, correct, inspect, or audit memory.
 
 - Retrieve the exact affected nodes where possible.
 - Use timeline or graph inspection tools appropriate to the request.
-- The background writer still owns all mutations. If the surface cannot
-  delegate, explain that persistence is unavailable rather than writing from
-  the main agent.
+- When the user explicitly asks to store, update, or forget memory—or create
+  nodes, edges, or hyperedges—the main agent performs that mutation directly.
+  Otherwise, use the background writer.
+- For multi-node writes, create the nodes before adding relationships. Report
+  only actual tool results.
 
 ## Retrieve with a relevance gate
 
@@ -97,30 +104,65 @@ semantic-only option, enable it for all read operations.
 If retrieval is noisy, use the current conversation and authoritative workspace
 evidence rather than forcing recalled material into the answer.
 
-## Do not mutate the graph on the main agent
+## Main-agent graph mutations
 
-The main agent may retrieve and inspect memory. A fresh memory-writer owns graph
-creation, updates, deletion, relationship changes, timeline logging, and token
-finalisation.
+The main agent mutates the graph only when the user explicitly requests it.
+Otherwise, a completion-triggered memory-writer owns graph creation, updates,
+deletion, and relationship changes.
 
-Do not duplicate the writer's work. Do not call `hm_store`, `hm_update`,
-`hm_forget`, `hm_add_relationships`, `hm_timeline_write`, or `hm_tokens` from
-the main agent during the normal delegated lifecycle.
+### Edge editing
+
+`hm_update` and `hm_forget` accept an optional `edge_id` (the entity_id from
+read responses) to target a single edge instead of a node. Pass `edge_version`
+for optimistic concurrency. Edge endpoints and relationship type are immutable;
+to change them, delete the edge with `hm_forget` and recreate with
+`hm_add_relationships`.
+
+Do not duplicate completed direct mutations through the writer. Keep
+`hm_timeline_write` and `hm_tokens` in deterministic completion-time
+bookkeeping.
 
 File upload is an exception only when the user explicitly asks to store a file
 and the active surface requires the main agent to perform the upload.
 
 ## Memory-writer dispatch
 
-Before every final response, spawn exactly one fresh fire-and-forget sub-agent
-and tell it to invoke `$memory-writer`. Use `fork_turns="none"` and a unique
-task name. Never reuse a writer.
+On Codex, the prompt hook supplies `finalizer`, `listener`, and `job` paths.
+After completing the work, stage the bounded contract locally with:
+
+```text
+python3 <finalizer> enqueue --job <job>
+```
+
+Pass JSON through stdin using a structured tool argument or a safely quoted
+heredoc. This only stages evidence; it starts no model and makes no MCP writes.
+Include supported candidate memories, even if the final answer does not repeat
+them. Include useful user facts, corrections, preferences, decisions, project
+context and completed outcomes; an empty list is appropriate only when the turn
+contains none. Do not invent a delivered answer.
+Include `activity_segments` with weights totalling 100 and only these categories:
+`reasoning`, `memory`, `context`, `doc_processing`, `automation`, `personal`,
+`chatting`, `research`, `design`, `calculations`, `coding`, `planning`,
+`productivity`, `writing`, `unmatched`. Invalid categories fail at staging;
+there is no default category or estimate.
+Then deliver the answer. **Do not spawn a memory-writer from the main Codex turn.**
+
+The Stop hook captures the completed answer and starts a bounded background
+completion handler. Only candidates or an explicit memory instruction cause it
+to invoke `$memory-writer`; the writer reconciles that evidence with the actual
+answer and applies the full durability gate. Logging and token reporting use
+direct MCP calls without a model. No Stop continuation or second reply is used.
+
+On surfaces without completion hooks, delegate only supported durable work to a
+fresh writer when the host permits it. Do not claim it saw a subsequent answer.
+If no post-response execution is available, disclose that limitation when relevant
+instead of promising the Codex lifecycle. Never add a dummy response to trigger it.
 
 Send a bounded contract with this shape:
 
 ```json
 {
-  "schema_version": "2.9.2",
+  "schema_version": "2.10.0",
   "turn_id": "host-supplied unique id",
   "occurred_at": "ISO-8601 timestamp when available",
   "active_scope": {
@@ -165,6 +207,7 @@ Send a bounded contract with this shape:
     }
   ],
   "timeline_summary": "request, material work, and outcome without transcript",
+  "activity_segments": [{"category": "writing", "weight": 100}],
   "timeline_only": ["important transient facts that must not become nodes"],
   "excluded": ["credentials, raw output, or other content the writer must ignore"],
   "token_listener": {
@@ -194,13 +237,12 @@ or skip each candidate.
 
 ## Fire-and-forget invariant
 
-After a successful dispatch, continue immediately to the user-facing response.
+After staging a Codex handoff, deliver the user-facing response immediately.
 Never wait for, poll, inspect, read, message, interrupt, or otherwise
 synchronise with the writer.
 
-If no sub-agent primitive is available, keep retrieval available but do not
-pretend that background persistence occurred. Mention the limitation only when
-the user explicitly requested a memory change or asked about HyperMemory.
+If the completion hook or background runtime is unavailable, keep retrieval
+available but do not pretend that background persistence occurred. Report failed persistence accurately; do not hide it or claim success.
 
 ## Error handling
 
@@ -216,8 +258,8 @@ the user explicitly requested a memory change or asked about HyperMemory.
 
 This protocol assumes read-only calls do not create semantic relationships,
 session relationships are excluded from normal retrieval, and obsolete edges
-can be removed or replaced. When those features are unavailable, use the
-conservative fallbacks above and do not claim full graph integrity.
+can be removed or replaced. If a required feature is unavailable, report that operation as failed. Do not
+substitute another type, relationship, completion source, or token estimate.
 
 ## Hard rules
 
@@ -227,6 +269,8 @@ conservative fallbacks above and do not claim full graph integrity.
   conversation.
 - Prefer exact hydration after recall when canonical keys are known.
 - Exclude `chat_*` relationships from semantic reasoning.
-- Dispatch exactly one fresh memory-writer on every turn.
-- Keep graph writes and telemetry off the main agent.
+- In Codex, stage evidence unless the user explicitly requests a memory mutation.
+- Empty durable work must not launch a model writer.
+- Keep graph writes off the main agent unless the user explicitly requests a
+  memory mutation. Keep telemetry off the main agent.
 - Never wait for, poll, inspect, read, message, or interrupt the writer.

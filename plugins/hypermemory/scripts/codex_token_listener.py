@@ -10,6 +10,7 @@ retried without losing usage.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -18,6 +19,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from codex_turn_contract import validate_segments
 
 COUNTER_FIELDS = (
     "input_tokens",
@@ -53,33 +56,23 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 @contextmanager
 def _state_lock(state_file: Path, timeout: float = 5.0) -> Iterator[None]:
-    """Serialize state updates across concurrent Codex sessions/sub-agents."""
-    lock_path = state_file.with_suffix(state_file.suffix + ".lock")
+    """Kernel-owned locks survive long calls and release on process exit."""
+    lock_path = state_file.with_suffix(state_file.suffix + ".flock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     deadline = time.monotonic() + timeout
-    descriptor: int | None = None
-    while descriptor is None:
-        try:
-            descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(descriptor, f"{os.getpid()}\n".encode())
-        except FileExistsError:
-            try:
-                stale = time.time() - lock_path.stat().st_mtime > 30
-                if stale:
-                    lock_path.unlink(missing_ok=True)
-                    continue
-            except FileNotFoundError:
-                continue
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f"timed out waiting for token state lock: {lock_path}"
-                ) from None
-            time.sleep(0.05)
     try:
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"timed out waiting for token state lock: {lock_path}") from None
+                time.sleep(0.05)
         yield
     finally:
         os.close(descriptor)
-        lock_path.unlink(missing_ok=True)
 
 
 def _state(path: Path) -> dict[str, Any]:
@@ -248,13 +241,16 @@ def _max_fresh_tokens_per_turn() -> int:
 def baseline(job_path: Path) -> int:
     job = _read_json(job_path)
     state_file = Path(str(job["state_file"]))
-    session_id = str(job.get("session_id") or "unknown-session")
+    session_id = job["session_id"]
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("exact session_id is required")
+    with _state_lock(state_file):
+        if session_id in _state(state_file)["sessions"]:
+            print(json.dumps({"baselined": False, "reason": "session_already_tracked", "session_id": session_id}))
+            return 0
     rollouts: dict[str, dict[str, int]] = {}
     transcript = job.get("transcript_path")
-    try:
-        paths = _session_rollouts(job)
-    except RuntimeError:
-        paths = [Path(str(transcript)).resolve()] if transcript and Path(str(transcript)).is_file() else []
+    paths = _session_rollouts(job)
     for path in paths:
         latest = _latest_counter(path)
         rollouts[_rollout_identity(path)] = (latest or {"counters": ZERO_COUNTERS})["counters"]
@@ -274,17 +270,13 @@ def baseline(job_path: Path) -> int:
     return 0
 
 
-DEFAULT_SEGMENTS = [
-    {"category": "coding", "weight": 80},
-    {"category": "context", "weight": 15},
-    {"category": "memory", "weight": 5},
-]
-
-
-def inspect(job_path: Path, wait_seconds: float, segments: list[dict] | None = None) -> int:
+def inspect(job_path: Path, wait_seconds: float, segments: list[dict]) -> int:
+    validate_segments(segments)
     job = _read_json(job_path)
     state_file = Path(str(job["state_file"]))
-    session_id = str(job.get("session_id") or "unknown-session")
+    session_id = job["session_id"]
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("exact session_id is required")
     with _state_lock(state_file):
         state = _state(state_file)
         previous_entry = dict(state["sessions"].get(session_id) or {})
@@ -318,48 +310,18 @@ def inspect(job_path: Path, wait_seconds: float, segments: list[dict] | None = N
         current_rollouts, delta, discovered_model, latest_timestamp = collect()
 
     if delta["total_tokens"] == 0:
-        print(
-            json.dumps(
-                {
-                    "exact_available": False,
-                    "reason": "no_new_token_count_record",
-                    "session_id": session_id,
-                    "fallback_turn_sequence": int(previous_entry.get("turn_sequence") or 0) + 1,
-                    "fallback": (
-                        "Submit one self_estimated hm_tokens report; optional uncertainty "
-                        "and cost must be omitted when unknown."
-                    ),
-                },
-                indent=2,
-            )
-        )
-        return 0
-
+        raise RuntimeError("no new exact token_count record")
     usage = _fresh_usage(delta)
     safety_limit = _max_fresh_tokens_per_turn()
     if usage["total_tokens"] > safety_limit:
-        print(
-            json.dumps(
-                {
-                    "exact_available": False,
-                    "reason": "fresh_token_safety_limit_exceeded",
-                    "session_id": session_id,
-                    "fresh_total_tokens": usage["total_tokens"],
-                    "cached_input_tokens": usage["cache_tokens"],
-                    "safety_limit": safety_limit,
-                    "fallback_turn_sequence": int(previous_entry.get("turn_sequence") or 0) + 1,
-                    "fallback": (
-                        "Do not submit the rejected counter delta; submit one "
-                        "bounded self-estimate with uncertainty."
-                    ),
-                },
-                indent=2,
-            )
-        )
-        return 0
+        raise RuntimeError("fresh token safety limit exceeded; rejected exact report")
 
     turn_sequence = int(previous_entry.get("turn_sequence") or 0) + 1
-    model = str(job.get("model") or discovered_model or "unknown")
+    model = job.get("model")
+    if model is None:
+        model = discovered_model
+    if not isinstance(model, str) or not model or model == "unknown":
+        raise ValueError("exact model identity is unavailable")
     report = {
         "ai_tool": "codex",
         "provider": "openai",
@@ -370,7 +332,7 @@ def inspect(job_path: Path, wait_seconds: float, segments: list[dict] | None = N
         **usage,
         "cache_accounting": "separate",
         "cost_quality": "unavailable",
-        "segments": segments or DEFAULT_SEGMENTS,
+        "segments": segments,
     }
     if latest_timestamp:
         report["timestamp"] = latest_timestamp
@@ -413,7 +375,6 @@ def ack(job_path: Path) -> int:
         }
         _atomic_json(state_file, state)
     claim_path.unlink(missing_ok=True)
-    job_path.unlink(missing_ok=True)
     print(json.dumps({"acknowledged": True, "session_id": session_id}))
     return 0
 
@@ -430,15 +391,15 @@ def main() -> int:
     inspect_parser.add_argument(
         "--segments-json",
         type=str,
-        default=None,
-        help="JSON array of activity segments (e.g. '[{\"category\":\"coding\",\"weight\":80}]')",
+        required=True,
+        help='JSON array of activity segments (e.g. \'[{"category":"coding","weight":80}]\')',
     )
     args = parser.parse_args()
     try:
         if args.command == "baseline":
             return baseline(args.job)
         if args.command == "inspect":
-            segs = json.loads(args.segments_json) if args.segments_json else None
+            segs = json.loads(args.segments_json)
             return inspect(args.job, args.wait_seconds, segments=segs)
         return ack(args.job)
     except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:

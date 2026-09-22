@@ -1,6 +1,6 @@
 {
   "name": "hypermemory",
-  "version": "2.9.2",
+  "version": "2.10.0+codex.20260922120000",
   "description": "Always-on, relationship-aware memory for ChatGPT and Codex with OAuth MCP access, delegated persistence, and token telemetry.",
   "author": {
     "name": "HyperMemory AI",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "HyperMemory",
     "shortDescription": "Durable memory for every ChatGPT and Codex turn",
-    "longDescription": "Recall relevant context at the start of work, then delegate durable memory writes, timeline updates, and honest token telemetry to a memory-writer sub-agent. Codex adds lifecycle hooks and exact local session-token deltas; ChatGPT uses uncertainty-labelled estimates.",
+    "longDescription": "Recall relevant context during work, then process durable memories after the answer is complete. Codex completion hooks launch a writer only for candidate memories; timeline and exact token reporting run separately without a model.",
     "developerName": "Runstack Inc.",
     "category": "Productivity",
     "capabilities": [

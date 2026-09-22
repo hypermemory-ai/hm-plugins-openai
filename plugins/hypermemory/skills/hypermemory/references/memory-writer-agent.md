@@ -1,12 +1,13 @@
 # Memory-writer role reference
 
-Invoke the parent-only skill at `../../memory-writer/SKILL.md`. It is the sole
+Use the skill at `../../memory-writer/SKILL.md`. It is the sole
 detailed writer contract and includes durability, relationship, validation,
 timeline, and token-reporting rules. Do not copy the parent conversation
 history.
 
-In Codex, create a fresh turn-unique task with `collaboration.spawn_agent` and
-`fork_turns="none"`. Supply the versioned bounded contract and any listener/job
-paths emitted by the lifecycle hook. After dispatch, return immediately without
-waiting, polling, inspecting, reading, messaging, interrupting, or reusing the
-writer.
+In Codex, the main agent stages the bounded contract locally and delivers its
+answer. Do not call `collaboration.spawn_agent` for memory. The Stop hook owns
+post-response dispatch; it supplies completed evidence to a fresh ephemeral
+writer only when durable candidates or an explicit memory instruction exist.
+The handler performs timeline and token bookkeeping directly without a model.
+Never wait for, poll, inspect, message, or reuse the background writer.
