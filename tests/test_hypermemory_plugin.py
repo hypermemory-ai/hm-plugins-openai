@@ -25,12 +25,9 @@ def _module(path: Path, name: str):
     return module
 
 
-def _first_json_block(markdown: str) -> dict:
-    prefix, marker, remainder = markdown.partition("```json\n")
-    assert marker and prefix
-    payload, marker, _ = remainder.partition("\n```")
-    assert marker
-    return json.loads(payload)
+def _embedded_contract(skill: str) -> dict:
+    block = skill.split("```json\n", 1)[1].split("\n```", 1)[0]
+    return json.loads(block)
 
 
 def _write_rollout(
@@ -79,7 +76,7 @@ def _write_rollout(
 def test_plugin_is_chatgpt_and_codex_only() -> None:
     manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text())
     assert manifest["name"] == "hypermemory"
-    assert manifest["version"].split("+", 1)[0] == "2.10.1"
+    assert manifest["version"].split("+", 1)[0] == "2.10.2"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert "hooks" not in manifest  # default hooks/hooks.json is auto-discovered
     assert (PLUGIN / "hooks" / "hooks.json").is_file()
@@ -95,15 +92,33 @@ def test_plugin_is_chatgpt_and_codex_only() -> None:
     assert "enforcement:" not in skill.split("---", 2)[1]
     assert "trigger:" not in skill.split("---", 2)[1]
     assert "# HyperMemory MCP — Main Agent Protocol" in skill
-    assert "## Memory-writer dispatch" in skill
-    assert "invoke `$memory-writer`" in skill
-    assert '"schema_version": "2.10.0"' in skill
+    first_40_lines = "\n".join(skill.splitlines()[:40])
+    assert "READ THIS ENTIRE FILE BEFORE MEMORY WORK" in first_40_lines
+    assert "WRITE THE FUCKING MEMORIES" in first_40_lines
+    assert "empty `durable_candidates` list is a failure" in first_40_lines
+    assert "arbitrary node counts" in first_40_lines
+    assert len(skill.splitlines()) <= 193
+    assert len(skill.split()) <= 1158
+    contract = _embedded_contract(skill)
+    assert list(contract) == [
+        "schema_version",
+        "turn_id",
+        "occurred_at",
+        "active_scope",
+        "request",
+        "outcome",
+        "durable_candidates",
+        "timeline_summary",
+        "activity_segments",
+        "timeline_only",
+        "excluded",
+        "token_listener",
+    ]
+    assert contract["schema_version"] == "2.10.0"
+    candidate = contract["durable_candidates"][0]
+    assert set(candidate["relationship_changes"]) == {"add", "remove_or_replace"}
+    assert candidate["action_hint"] == "store | update | forget | supersede"
     writer = (writer_skill / "SKILL.md").read_text()
-    writer_lines = writer.splitlines()
-    assert writer_lines.index("## READ THIS ENTIRE FILE BEFORE WRITING") + 1 <= 40
-    assert writer_lines.index("## WRITE THE FUCKING MEMORIES — critical summary") + 1 <= 40
-    assert writer_lines.index("## Contract schema") + 1 <= 40
-    assert _first_json_block(writer) == _first_json_block(skill)
     assert "## Durability gate" in writer
     assert "## Recall without contamination" in writer
     assert "## Post-write quality gate" in writer
@@ -114,10 +129,6 @@ def test_plugin_is_chatgpt_and_codex_only() -> None:
     assert "Do not create per-turn, per-document, or `chat_*` hyperedges" in writer
     assert "Do not\n   estimate, substitute zero" in writer
     assert "`cost_quality: unavailable` is required when no cost is supplied" in writer
-    assert "An explicit user instruction to remember something establishes future value" in writer
-    assert "Use a no-session-recording or semantic-only option whenever the API provides one" in writer
-    assert "If the API cannot remove an obsolete relationship" in writer
-    assert "honest activity segments" in writer
     writer_agent = (PLUGIN / "agents" / "memory-writer.md").read_text()
     assert "Invoke `$memory-writer`" in writer_agent
     assert "sole detailed operating contract" in writer_agent
