@@ -25,6 +25,14 @@ def _module(path: Path, name: str):
     return module
 
 
+def _first_json_block(markdown: str) -> dict:
+    prefix, marker, remainder = markdown.partition("```json\n")
+    assert marker and prefix
+    payload, marker, _ = remainder.partition("\n```")
+    assert marker
+    return json.loads(payload)
+
+
 def _write_rollout(
     path: Path,
     *,
@@ -71,7 +79,7 @@ def _write_rollout(
 def test_plugin_is_chatgpt_and_codex_only() -> None:
     manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text())
     assert manifest["name"] == "hypermemory"
-    assert manifest["version"].split("+", 1)[0] == "2.10.0"
+    assert manifest["version"].split("+", 1)[0] == "2.10.1"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert "hooks" not in manifest  # default hooks/hooks.json is auto-discovered
     assert (PLUGIN / "hooks" / "hooks.json").is_file()
@@ -91,6 +99,11 @@ def test_plugin_is_chatgpt_and_codex_only() -> None:
     assert "invoke `$memory-writer`" in skill
     assert '"schema_version": "2.10.0"' in skill
     writer = (writer_skill / "SKILL.md").read_text()
+    writer_lines = writer.splitlines()
+    assert writer_lines.index("## READ THIS ENTIRE FILE BEFORE WRITING") + 1 <= 40
+    assert writer_lines.index("## WRITE THE FUCKING MEMORIES — critical summary") + 1 <= 40
+    assert writer_lines.index("## Contract schema") + 1 <= 40
+    assert _first_json_block(writer) == _first_json_block(skill)
     assert "## Durability gate" in writer
     assert "## Recall without contamination" in writer
     assert "## Post-write quality gate" in writer
@@ -101,6 +114,10 @@ def test_plugin_is_chatgpt_and_codex_only() -> None:
     assert "Do not create per-turn, per-document, or `chat_*` hyperedges" in writer
     assert "Do not\n   estimate, substitute zero" in writer
     assert "`cost_quality: unavailable` is required when no cost is supplied" in writer
+    assert "An explicit user instruction to remember something establishes future value" in writer
+    assert "Use a no-session-recording or semantic-only option whenever the API provides one" in writer
+    assert "If the API cannot remove an obsolete relationship" in writer
+    assert "honest activity segments" in writer
     writer_agent = (PLUGIN / "agents" / "memory-writer.md").read_text()
     assert "Invoke `$memory-writer`" in writer_agent
     assert "sole detailed operating contract" in writer_agent
