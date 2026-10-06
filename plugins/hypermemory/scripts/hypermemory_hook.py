@@ -21,6 +21,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIRECTORY = str(Path(__file__).resolve().parent)
+if SCRIPT_DIRECTORY not in sys.path:
+    sys.path.insert(0, SCRIPT_DIRECTORY)
+
 LIGHTWEIGHT_MAX_CHARS = 80
 LIGHTWEIGHT_PHRASES = frozenset({"got it", "hello", "hey", "hi", "howdy", "ok", "okay", "thank you", "thanks"})
 OVERVIEW_TOOL = "mcp__hypermemory__hm_get_overview"
@@ -183,10 +187,23 @@ def _turn_job(payload: dict[str, Any]) -> tuple[Path, Path]:
     turn_id = _safe_id(payload.get("turn_id"))
     data_dir = _plugin_data()
     job_path = data_dir / "jobs" / f"turn-{session_id}-{turn_id}.json"
-    if job_path.is_file():
-        return _plugin_root() / "scripts" / "codex_token_listener.py", job_path
     session_path = data_dir / "sessions" / f"{session_id}.json"
     session = json.loads(session_path.read_text(encoding="utf-8")) if session_path.is_file() else {}
+    if job_path.is_file():
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        if "enforcement" not in job:
+            lightweight = _is_lightweight_prompt(_prompt_text(payload))
+            job["enforcement"] = {
+                "mode": "lightweight" if lightweight else "substantive",
+                "skill_sha256": _skill_sha256(),
+                "overview_required": not lightweight and not bool(session.get("overview_verified")),
+                "overview_verified": False,
+                "recall_required": not lightweight,
+                "recall_verified": False,
+                "tool_receipts": [],
+            }
+            _atomic_json(job_path, job)
+        return _plugin_root() / "scripts" / "codex_token_listener.py", job_path
     lightweight = _is_lightweight_prompt(_prompt_text(payload))
     job = {
         "version": 1,

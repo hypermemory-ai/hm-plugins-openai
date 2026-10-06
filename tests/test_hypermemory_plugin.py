@@ -88,7 +88,7 @@ def _write_rollout(
 def test_plugin_is_chatgpt_and_codex_only() -> None:
     manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text())
     assert manifest["name"] == "hypermemory"
-    assert manifest["version"].split("+", 1)[0] == "2.11.0"
+    assert manifest["version"].split("+", 1)[0] == "2.11.1"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert "hooks" not in manifest  # default hooks/hooks.json is auto-discovered
     assert (PLUGIN / "hooks" / "hooks.json").is_file()
@@ -218,6 +218,88 @@ def test_hooks_inject_the_full_skill_and_preserve_baseline(tmp_path):
         env=env,
     )
     assert json.loads(state_path.read_text()) == before
+
+
+def test_runpy_hook_launcher_imports_sibling_modules_from_unrelated_cwd(tmp_path: Path) -> None:
+    hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
+    command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+    rollout = tmp_path / "rollout.jsonl"
+    _write_rollout(
+        rollout, physical_id="session-1", logical_id="session-1", total=100, input_tokens=80, output_tokens=20
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "PYTHONPATH"
+    }
+    env.update(
+        {
+            "PLUGIN_ROOT": str(PLUGIN),
+            "PLUGIN_DATA": str(tmp_path / "data"),
+            "CODEX_HOME": str(tmp_path / "codex"),
+        }
+    )
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=tmp_path,
+        input=json.dumps(
+            {
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "prompt": "Fix CI",
+                "transcript_path": str(rollout),
+                "model": "gpt-test",
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    assert json.loads(result.stdout)["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_user_prompt_migrates_legacy_job_without_enforcement_ledger(tmp_path: Path) -> None:
+    rollout = tmp_path / "rollout.jsonl"
+    _write_rollout(
+        rollout, physical_id="session-1", logical_id="session-1", total=100, input_tokens=80, output_tokens=20
+    )
+    job_path = tmp_path / "jobs" / "turn-session-1-turn-1.json"
+    job_path.parent.mkdir(parents=True)
+    job_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "lifecycle": "post_response",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "transcript_path": str(rollout),
+                "model": "gpt-test",
+                "state_file": str(tmp_path / "token-state.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PLUGIN_ROOT": str(PLUGIN), "PLUGIN_DATA": str(tmp_path)}
+    output = _run_hook(
+        "user-prompt",
+        {
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "prompt": "Fix CI",
+            "transcript_path": str(rollout),
+            "model": "gpt-test",
+        },
+        env,
+    )
+    assert output["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    enforcement = json.loads(job_path.read_text())["enforcement"]
+    assert enforcement["mode"] == "substantive"
+    assert enforcement["overview_required"] is True
+    assert enforcement["recall_required"] is True
+    assert enforcement["tool_receipts"] == []
 
 
 def test_public_marketplace_is_self_contained() -> None:
