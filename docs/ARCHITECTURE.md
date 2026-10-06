@@ -37,11 +37,16 @@ sequenceDiagram
     participant MCP as HyperMemory MCP
 
     U->>M: Submit a prompt
+    Note over M: Full skill injected
+    M->>MCP: Overview once per conversation
     M->>MCP: Recall relevant context
+    Note over M: Other tools blocked until reads succeed
     M->>M: Complete requested work
     M->>Q: Stage bounded evidence (no agent)
-    M-->>U: Deliver final answer
-    Q->>H: Stop captures the completed answer
+    M->>H: Stop verifies receipts and contract
+    H-->>M: Continue when verification fails
+    M-->>U: Deliver verified final answer
+    Q->>H: Stop captures the accepted answer
     H->>Q: Claim this completed turn once
     alt Durable candidates or explicit memory instruction
         H->>W: Supply completed evidence
@@ -66,11 +71,12 @@ session has recursive hooks and unrelated tools disabled. It neither resumes
 the parent nor adds a user-facing task or response. The handler has a finite
 runtime, and ambiguous remote failures are held for review instead of replayed.
 
-The prompt hook prepares a token job and instructs the main agent to stage a
-bounded contract. The Stop hook captures only its public final answer. It never
-blocks with a synthetic continuation. The first prompt establishes the session
-usage baseline once. There is no `SessionStart` hook or alternate completion
-source; jobs use `lifecycle: post_response`.
+SessionStart and prompt hooks inject the complete skill. The prompt hook also
+prepares a token job and exact per-turn enforcement ledger. PreToolUse blocks
+other tools until PostToolUse records successful overview and recall receipts.
+Stop validates those receipts and the complete staged contract; failures create
+a continuation prompt, while compliant turns use Stop as their sole completion
+source. Jobs use `lifecycle: post_response`.
 
 Completion claims are exclusive. Repeated Stop events cannot start a second
 handler. Missing handoffs create no candidate memories. Partial remote failures
@@ -116,8 +122,8 @@ Both plugins use the default `hooks/hooks.json` discovery path. Plugin hooks
 are non-managed, so Codex requires users to review and trust their exact
 definition. Changed hook content receives a new hash and must be reviewed again.
 
-HyperMemory hooks add hidden recall instructions and create bounded
-token-listener jobs without user-visible status messages. HyperColab hooks load
+HyperMemory hooks inject the complete protocol, enforce read ordering, maintain
+bounded receipt ledgers, and reject incomplete turns. HyperColab hooks load
 project context, check writes against claims, and record structured activity.
 The HyperColab launcher degrades safely when its CLI is missing: it explains
 the prerequisite at session start and does not block writes in an unconfigured

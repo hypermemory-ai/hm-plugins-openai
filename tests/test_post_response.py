@@ -20,6 +20,20 @@ def runtime(monkeypatch):
     return importlib.import_module("codex_completion_worker"), importlib.import_module("codex_turn_finalizer")
 
 
+def candidate(description="A durable decision"):
+    return {
+        "action_hint": "store",
+        "key_hint": None,
+        "node_type": "decision",
+        "description_draft": description,
+        "facts": {},
+        "relationship_changes": {"add": [], "remove_or_replace": []},
+        "durability_reason": "Improves future project recall",
+        "source_basis": "completed_work",
+        "confidence": "high",
+    }
+
+
 def stage(tmp_path, finalizer, candidates=None):
     job = tmp_path / "jobs" / "turn-parent-turn-1.json"
     job.parent.mkdir(exist_ok=True)
@@ -39,9 +53,16 @@ def stage(tmp_path, finalizer, candidates=None):
         {
             "schema_version": "2.10.0",
             "turn_id": "turn-1",
+            "occurred_at": "2026-10-06T10:00:00Z",
+            "active_scope": {"project_key": None, "project_name": "test", "other_anchor_keys": []},
+            "request": {"intent": "Exercise post-response handling", "explicit_memory_instruction": None},
+            "outcome": {"status": "completed", "summary": "Completed a test task.", "durable_artifacts": []},
             "durable_candidates": candidates or [],
             "timeline_summary": "Completed a test task.",
             "activity_segments": [{"category": "coding", "weight": 100}],
+            "timeline_only": [],
+            "excluded": [],
+            "token_listener": {"listener_path": "/listener", "job_path": str(job)},
         },
     )
     return job
@@ -96,7 +117,7 @@ def transport(monkeypatch, runtime):
 
 def test_no_process_or_writer_before_final_answer(runtime, tmp_path, monkeypatch, transport):
     worker, finalizer = runtime
-    job = stage(tmp_path, finalizer, [{"description_draft": "A durable decision"}])
+    job = stage(tmp_path, finalizer, [candidate()])
     spawned = []
     monkeypatch.setattr(worker.subprocess, "Popen", lambda *a, **k: spawned.append(a))
     assert not worker.dispatch(job, SCRIPTS.parent)
@@ -121,7 +142,7 @@ def test_completed_turn_without_candidates_only_logs(runtime, tmp_path, monkeypa
 
 def test_candidate_writer_receives_actual_answer_and_logs_separately(runtime, tmp_path, monkeypatch, transport):
     worker, finalizer = runtime
-    job = stage(tmp_path, finalizer, [{"description_draft": "Durable decision"}])
+    job = stage(tmp_path, finalizer, [candidate("Durable decision")])
     complete(tmp_path, finalizer, "Final result differs from the draft.")
     assert worker.process(job, transport) == "done"
     assert [call[0] for call in transport.calls] == [
@@ -201,13 +222,11 @@ def test_explicit_forget_starts_writer_without_store_candidates(runtime):
 def test_steering_updates_pending_contract_only(runtime, tmp_path):
     _, finalizer = runtime
     job = stage(tmp_path, finalizer)
-    changed = {
-        "schema_version": "2.10.0",
-        "turn_id": "turn-1",
-        "durable_candidates": [{"facts": "corrected"}],
-        "timeline_summary": "Corrected outcome",
-        "activity_segments": [{"category": "writing", "weight": 100}],
-    }
+    queue = json.loads(next((tmp_path / "finalization").glob("*.json")).read_text())
+    changed = queue["contract"]
+    changed["durable_candidates"] = [candidate("Corrected durable fact")]
+    changed["timeline_summary"] = "Corrected outcome"
+    changed["activity_segments"] = [{"category": "writing", "weight": 100}]
     finalizer.enqueue(job, changed)
     complete(tmp_path, finalizer)
     finalizer.enqueue(job, {**changed, "durable_candidates": []})
@@ -234,9 +253,10 @@ def test_stop_failure_does_not_continue_parent(tmp_path):
         capture_output=True,
         env=env,
     )
-    assert result.returncode == 1
-    assert "systemMessage" in json.loads(result.stdout)
-    assert "decision" not in json.loads(result.stdout)
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "systemMessage" in output
+    assert output["decision"] == "block"
 
 
 @pytest.mark.parametrize("durable", [False, True])
@@ -292,14 +312,43 @@ for line in sys.stdin:
     )
     assert "Do not spawn a memory-writer" in submitted.stdout
     job = tmp_path / "jobs" / "turn-parent-turn-1.json"
+    for tool_name, tool_use_id, response in (
+        ("mcp__hypermemory__hm_get_overview", "overview-1", {"nodes": 1}),
+        ("mcp__hypermemory__hm_recall", "recall-1", {"count": 0}),
+    ):
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "hypermemory_hook.py"), "post-tool"],
+            input=json.dumps(
+                {
+                    **payload,
+                    "tool_name": tool_name,
+                    "tool_use_id": tool_use_id,
+                    "tool_response": {"structuredContent": response, "isError": False},
+                }
+            ),
+            text=True,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
     finalizer.enqueue(
         job,
         {
             "schema_version": "2.10.0",
             "turn_id": "turn-1",
+            "occurred_at": "2026-10-06T10:00:00Z",
+            "active_scope": {"project_key": None, "project_name": "test", "other_anchor_keys": []},
+            "request": {"intent": "Exercise the full hook lifecycle", "explicit_memory_instruction": None},
+            "outcome": {"status": "completed", "summary": "Completed test task", "durable_artifacts": []},
             "timeline_summary": "Completed test task",
-            "durable_candidates": [{"description_draft": "Known durable fact"}] if durable else [],
+            "durable_candidates": [candidate("Known durable fact")] if durable else [],
             "activity_segments": [{"category": "coding", "weight": 100}],
+            "timeline_only": [],
+            "excluded": [],
+            "token_listener": {
+                "listener_path": str(SCRIPTS / "codex_token_listener.py"),
+                "job_path": str(job),
+            },
         },
     )
     assert not log.exists()
@@ -357,7 +406,7 @@ for line in sys.stdin:
 @pytest.mark.parametrize("failed_phase", ["writer", "hm_timeline_write", "hm_tokens"])
 def test_each_write_failure_preserves_the_other_operations(runtime, tmp_path, transport, failed_phase):
     worker, finalizer = runtime
-    job = stage(tmp_path, finalizer, [{"description_draft": "Remember the operating constraint"}])
+    job = stage(tmp_path, finalizer, [candidate("Remember the operating constraint")])
     complete(tmp_path, finalizer)
     transport.fail_on = failed_phase
     assert worker.process(job, transport) == "needs_review"

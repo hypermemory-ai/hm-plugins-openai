@@ -1,7 +1,7 @@
 {
   "name": "hypermemory",
-  "version": "2.10.3+codex.20261006083816",
-  "description": "Always-on, relationship-aware memory for ChatGPT and Codex with OAuth MCP access, delegated persistence, and token telemetry.",
+  "version": "2.11.0+codex.20261006100455",
+  "description": "Fail-closed, relationship-aware memory for ChatGPT and Codex with verified recall, delegated persistence, and exact token telemetry.",
   "author": {
     "name": "HyperMemory AI",
     "email": "info@hypermemory.io",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "HyperMemory",
     "shortDescription": "Durable memory for every ChatGPT and Codex turn",
-    "longDescription": "Recall relevant context during work, then process durable memories after the answer is complete. Codex completion hooks launch a writer only for candidate memories; timeline and exact token reporting run separately without a model.",
+    "longDescription": "Codex hooks inject the complete protocol, require verified overview and recall before substantive work, and reject incomplete turn handoffs. Durable memories are processed after the accepted answer; timeline and exact token reporting run separately without a model.",
     "developerName": "Runstack Inc.",
     "category": "Productivity",
     "capabilities": [

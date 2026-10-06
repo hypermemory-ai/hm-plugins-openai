@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Codex lifecycle bridge for mandatory HyperMemory behavior.
+"""Fail-closed Codex lifecycle enforcement for mandatory HyperMemory behavior.
 
-The hook classifies lightweight prompts, prepares token-listener jobs before
-model work, and injects concise hidden developer context. Stop captures the final
-answer and starts a bounded completion handler without continuing the parent.
+The prompt hook injects the complete skill and creates an exact per-turn ledger.
+Tool hooks prevent substantive work before the required reads and record only
+successful MCP receipts. Stop verifies those receipts and the staged handoff
+before it accepts the answer or starts post-response processing.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -21,6 +23,10 @@ from typing import Any
 
 LIGHTWEIGHT_MAX_CHARS = 80
 LIGHTWEIGHT_PHRASES = frozenset({"got it", "hello", "hey", "hi", "howdy", "ok", "okay", "thank you", "thanks"})
+OVERVIEW_TOOL = "mcp__hypermemory__hm_get_overview"
+RECALL_TOOL = "mcp__hypermemory__hm_recall"
+READ_TOOLS = frozenset({OVERVIEW_TOOL, RECALL_TOOL})
+CODE_MODE_TOOLS = frozenset({"exec", "functions.exec"})
 
 
 def _prompt_text(payload):
@@ -61,6 +67,18 @@ def _plugin_data() -> Path:
     return path
 
 
+def _skill_text() -> str:
+    path = _plugin_root() / "skills" / "hypermemory" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError("HyperMemory skill is empty")
+    return text
+
+
+def _skill_sha256() -> str:
+    return hashlib.sha256(_skill_text().encode()).hexdigest()
+
+
 def _safe_id(value: object) -> str:
     if not isinstance(value, str) or not value or len(value) > 160:
         raise ValueError("an exact session or turn identifier is required")
@@ -93,6 +111,23 @@ def _context(event: str, text: str, notice: str | None = None) -> None:
     )
 
 
+def _block(event: str, reason: str) -> int:
+    if event == "pre-tool":
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+    elif event == "session-start":
+        output = {"continue": False, "stopReason": reason, "systemMessage": reason}
+    else:
+        output = {"decision": "block", "reason": reason, "systemMessage": reason}
+    print(json.dumps(output))
+    return 0
+
+
 def _completed_failure_notice(data_dir: Path) -> str | None:
     """Announce finished failures once; never inspect a running handler."""
     from codex_token_listener import _read_json, _state_lock
@@ -122,8 +157,25 @@ def _completed_failure_notice(data_dir: Path) -> str | None:
 def _hook_error(event: str, exc: Exception) -> int:
     message = f"HyperMemory {event} failed: {type(exc).__name__}: {exc}"
     print(message, file=sys.stderr)
-    print(json.dumps({"systemMessage": message}))
-    return 1
+    return _block(event, message)
+
+
+def _job_path(payload: dict[str, Any]) -> Path:
+    session_id = _safe_id(payload.get("session_id"))
+    turn_id = _safe_id(payload.get("turn_id"))
+    return _plugin_data() / "jobs" / f"turn-{session_id}-{turn_id}.json"
+
+
+def _read_job(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    from codex_token_listener import _read_json
+
+    path = _job_path(payload)
+    if not path.is_file():
+        raise ValueError("turn is missing its UserPromptSubmit enforcement ledger")
+    job = _read_json(path)
+    if (job.get("session_id"), job.get("turn_id")) != (payload.get("session_id"), payload.get("turn_id")):
+        raise ValueError("turn enforcement ledger identity mismatch")
+    return path, job
 
 
 def _turn_job(payload: dict[str, Any]) -> tuple[Path, Path]:
@@ -131,6 +183,11 @@ def _turn_job(payload: dict[str, Any]) -> tuple[Path, Path]:
     turn_id = _safe_id(payload.get("turn_id"))
     data_dir = _plugin_data()
     job_path = data_dir / "jobs" / f"turn-{session_id}-{turn_id}.json"
+    if job_path.is_file():
+        return _plugin_root() / "scripts" / "codex_token_listener.py", job_path
+    session_path = data_dir / "sessions" / f"{session_id}.json"
+    session = json.loads(session_path.read_text(encoding="utf-8")) if session_path.is_file() else {}
+    lightweight = _is_lightweight_prompt(_prompt_text(payload))
     job = {
         "version": 1,
         "lifecycle": "post_response",
@@ -140,9 +197,28 @@ def _turn_job(payload: dict[str, Any]) -> tuple[Path, Path]:
         "transcript_path": payload.get("transcript_path"),
         "model": payload.get("model"),
         "state_file": str(data_dir / "token-state.json"),
+        "enforcement": {
+            "mode": "lightweight" if lightweight else "substantive",
+            "skill_sha256": _skill_sha256(),
+            "overview_required": not lightweight and not bool(session.get("overview_verified")),
+            "overview_verified": False,
+            "recall_required": not lightweight,
+            "recall_verified": False,
+            "tool_receipts": [],
+        },
     }
     _atomic_json(job_path, job)
     return _plugin_root() / "scripts" / "codex_token_listener.py", job_path
+
+
+def session_start(_payload: dict[str, Any]) -> int:
+    _context(
+        "SessionStart",
+        "HyperMemory mandatory protocol follows. Read and apply the entire skill.\n\n"
+        + _skill_text()
+        + "\n\nEnd HyperMemory mandatory protocol.",
+    )
+    return 0
 
 
 def user_prompt(payload: dict[str, Any]) -> int:
@@ -154,7 +230,8 @@ def user_prompt(payload: dict[str, Any]) -> int:
     with contextlib.redirect_stdout(io.StringIO()):
         baseline(job_path)
     notice = _completed_failure_notice(_plugin_data())
-    lightweight = _is_lightweight_prompt(_prompt_text(payload))
+    _, job = _read_job(payload)
+    lightweight = job["enforcement"]["mode"] == "lightweight"
     recall_instruction = (
         "mode=lightweight; skip hm_get_overview and hm_recall on the main agent."
         if lightweight
@@ -166,6 +243,9 @@ def user_prompt(payload: dict[str, Any]) -> int:
     )
     _context(
         "UserPromptSubmit",
+        "HyperMemory mandatory protocol follows. Read and apply the entire skill.\n\n"
+        + _skill_text()
+        + "\n\nEnd HyperMemory mandatory protocol.\n\n"
         f"HyperMemory turn: {recall_instruction}\n"
         "Apply the HyperMemory skill. Keep telemetry off the main agent. Keep graph "
         "writes off the main agent unless the user explicitly requests a memory "
@@ -190,18 +270,130 @@ def user_prompt(payload: dict[str, Any]) -> int:
     return 0
 
 
+def _pending_read(job: dict[str, Any]) -> str | None:
+    enforcement = job.get("enforcement")
+    if not isinstance(enforcement, dict):
+        raise ValueError("turn enforcement ledger is malformed")
+    if enforcement.get("mode") == "lightweight":
+        return None
+    if enforcement.get("overview_required") and not enforcement.get("overview_verified"):
+        return OVERVIEW_TOOL
+    if enforcement.get("recall_required") and not enforcement.get("recall_verified"):
+        return RECALL_TOOL
+    return None
+
+
+def pre_tool(payload: dict[str, Any]) -> int:
+    _, job = _read_job(payload)
+    required = _pending_read(job)
+    tool = payload.get("tool_name")
+    tool_input = payload.get("tool_input")
+    code = tool_input.get("code") if isinstance(tool_input, dict) else None
+    code_mode_read = tool in CODE_MODE_TOOLS and isinstance(code, str) and required in code
+    if required and tool != required and not code_mode_read:
+        return _block(
+            "pre-tool",
+            f"BLOCKED by HyperMemory enforcement: call {required} successfully before {tool or 'any other tool'}.",
+        )
+    print("{}")
+    return 0
+
+
+def _successful_mcp_response(response: object) -> bool:
+    return (
+        isinstance(response, dict)
+        and response.get("isError") is not True
+        and ("structuredContent" in response or "content" in response)
+    )
+
+
+def post_tool(payload: dict[str, Any]) -> int:
+    from codex_token_listener import _read_json, _state_lock
+
+    tool = payload.get("tool_name")
+    if tool not in READ_TOOLS:
+        raise ValueError(f"unsupported HyperMemory receipt tool: {tool!r}")
+    if not _successful_mcp_response(payload.get("tool_response")):
+        return _block("post-tool", f"HyperMemory enforcement rejected the failed {tool} result. Retry it.")
+    path, _ = _read_job(payload)
+    with _state_lock(path):
+        job = _read_json(path)
+        enforcement = job["enforcement"]
+        if tool == RECALL_TOOL and _pending_read(job) == OVERVIEW_TOOL:
+            return _block("post-tool", "HyperMemory enforcement requires hm_get_overview before hm_recall.")
+        response_hash = hashlib.sha256(
+            json.dumps(payload["tool_response"], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        receipt = {
+            "tool": tool,
+            "tool_use_id": _safe_id(payload.get("tool_use_id")),
+            "response_sha256": response_hash,
+            "verified_at": datetime.now(UTC).isoformat(),
+        }
+        if not any(item.get("tool_use_id") == receipt["tool_use_id"] for item in enforcement["tool_receipts"]):
+            enforcement["tool_receipts"].append(receipt)
+        if tool == OVERVIEW_TOOL:
+            enforcement["overview_verified"] = True
+        else:
+            enforcement["recall_verified"] = True
+        _atomic_json(path, job)
+    if tool == OVERVIEW_TOOL:
+        session_path = _plugin_data() / "sessions" / f"{_safe_id(payload.get('session_id'))}.json"
+        _atomic_json(
+            session_path,
+            {"overview_verified": True, "verified_at": datetime.now(UTC).isoformat()},
+        )
+    print("{}")
+    return 0
+
+
+def _stop_failures(payload: dict[str, Any]) -> tuple[Path, list[str]]:
+    from codex_token_listener import _read_json
+    from codex_turn_contract import validate_contract
+    from codex_turn_finalizer import _queue_path
+
+    job_path, job = _read_job(payload)
+    failures = []
+    required = _pending_read(job)
+    if required:
+        failures.append(f"missing successful {required} receipt")
+    queue = _queue_path(job_path, job)
+    if not queue.is_file():
+        failures.append("missing staged turn contract")
+        return job_path, failures
+    entry = _read_json(queue)
+    if (entry.get("session_id"), entry.get("turn_id")) != (job["session_id"], job["turn_id"]):
+        failures.append("staged turn contract identity mismatch")
+        return job_path, failures
+    if entry.get("status") != "pending" or not isinstance(entry.get("contract"), dict):
+        failures.append("staged turn contract is not pending and complete")
+        return job_path, failures
+    try:
+        validate_contract(entry["contract"])
+    except (TypeError, ValueError) as exc:
+        failures.append(f"invalid staged turn contract: {exc}")
+    listener = _plugin_root() / "scripts" / "codex_token_listener.py"
+    expected = {"listener_path": str(listener), "job_path": str(job_path)}
+    if entry["contract"].get("token_listener") != expected:
+        failures.append("turn contract token_listener does not match the hook-supplied paths")
+    return job_path, failures
+
+
 def stop(payload: dict[str, Any]) -> int:
-    # The parent answer exists before a completion handler can be dispatched.
+    # Refuse completion until hook-observed reads and a strict handoff exist.
     sys.path.insert(0, str(_plugin_root() / "scripts"))
     from codex_completion_worker import dispatch
     from codex_turn_finalizer import record_stop
 
+    job_path, failures = _stop_failures(payload)
+    if failures:
+        return _block(
+            "stop",
+            "BLOCKED by HyperMemory Stop verification: "
+            + "; ".join(failures)
+            + ". Perform the missing work; claims of compliance do not count.",
+        )
     record_stop(_plugin_data(), payload)
-    session = _safe_id(payload.get("session_id"))
-    turn = _safe_id(payload.get("turn_id"))
-    job_path = _plugin_data() / "jobs" / f"turn-{session}-{turn}.json"
-    if not job_path.is_file():
-        raise ValueError("completed turn is missing its prompt-hook job")
     dispatch(job_path, _plugin_root())
     print(json.dumps({"continue": True}))
     return 0
@@ -209,13 +401,18 @@ def stop(payload: dict[str, Any]) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("event", choices=("user-prompt", "stop"))
+    parser.add_argument("event", choices=("session-start", "user-prompt", "pre-tool", "post-tool", "stop"))
     args = parser.parse_args()
     try:
         payload = _read_input()
-        if args.event == "user-prompt":
-            return user_prompt(payload)
-        return stop(payload)
+        handlers = {
+            "session-start": session_start,
+            "user-prompt": user_prompt,
+            "pre-tool": pre_tool,
+            "post-tool": post_tool,
+            "stop": stop,
+        }
+        return handlers[args.event](payload)
     except Exception as exc:
         return _hook_error(args.event, exc)
 

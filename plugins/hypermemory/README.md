@@ -11,8 +11,8 @@ MCP server, and Codex lifecycle enforcement. Token reporting requires an exact s
   session-only relationships. Narrow standalone greetings and acknowledgements
   skip retrieval.
   Overview (once per conversation) and recall must finish before substantive
-  task work and the answer. The prompt hook instructs the agent to make these
-  calls; instruction tests do not prove the model obeys their ordering.
+  task work and the answer. `PreToolUse` denies other tools until hook-observed,
+  successful MCP receipts prove those reads occurred in order.
 - Codex main agent: stages a bounded local contract and delivers its answer.
   It does not launch a memory-writing agent.
 - Completion hook: after the final answer exists, starts a bounded background
@@ -25,11 +25,12 @@ MCP server, and Codex lifecycle enforcement. Token reporting requires an exact s
   calls through `codex app-server`; they do not invoke a model. The private
   ephemeral session reuses Codex OAuth without extracting credentials. Recursive
   hooks and unrelated tools are disabled in that session only.
-- Two Codex hooks remain: `UserPromptSubmit` and `Stop`. The first prompt
-  establishes the token baseline once per session; no `SessionStart` hook runs.
-  HyperMemory use is not forced silent.
-- Codex hooks remain subject to normal trust. No hook blocks Stop, resumes the
-  parent, or adds a second response. Version-safe hook commands continue to
+- Five Codex hook events enforce the lifecycle. `SessionStart` and
+  `UserPromptSubmit` inject the complete skill, `PreToolUse` gates substantive
+  tools, `PostToolUse` records successful overview/recall receipts, and `Stop`
+  rejects missing reads or an invalid handoff with a continuation prompt.
+- Codex hooks remain subject to normal trust. A compliant Stop never resumes the
+  parent or adds a second response. Version-safe hook commands continue to
   resolve the currently installed scripts.
 - A surface without exact usage reports that limitation; no token estimate is
   substituted.
@@ -51,7 +52,8 @@ formats remain pending, and partial or ambiguous writes require review.
 The completion handler is a finite per-turn process, not a permanent daemon.
 It requires the native `codex` executable and existing HyperMemory OAuth login.
 Only the worker receives the completed evidence. The parent never waits or
-polls. Stop is the sole completion source; no transcript or legacy route is used.
+polls. Stop is the sole completion source; enforcement uses hook receipts and
+local queue state, never the unstable transcript format or a model claim.
 
 Memory, timeline and token writes record independent receipts or exact errors.
 A failure cannot suppress the other operations. Missing exact counters fail the

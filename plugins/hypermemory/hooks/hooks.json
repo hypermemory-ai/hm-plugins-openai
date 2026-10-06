@@ -1,14 +1,51 @@
 {
-  "description": "Recall before each turn; persist only after the completed answer.",
+  "description": "Inject the full memory protocol, gate work on verified reads, and reject incomplete turns.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and (sys.stderr.write(\"HyperMemory PLUGIN_ROOT missing\\n\") and sys.exit(2)); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and (sys.stderr.write(\"HyperMemory hook missing\\n\") and sys.exit(2)); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' session-start",
+            "timeout": 10,
+            "additionalContextLimit": 6000
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and sys.exit(0); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and sys.exit(0); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' user-prompt",
+            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and (sys.stderr.write(\"HyperMemory PLUGIN_ROOT missing\\n\") and sys.exit(2)); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and (sys.stderr.write(\"HyperMemory hook missing\\n\") and sys.exit(2)); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' user-prompt",
             "timeout": 10,
             "additionalContextLimit": 6000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and (sys.stderr.write(\"HyperMemory PLUGIN_ROOT missing\\n\") and sys.exit(2)); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and (sys.stderr.write(\"HyperMemory hook missing\\n\") and sys.exit(2)); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' pre-tool",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__hypermemory__(hm_get_overview|hm_recall)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and (sys.stderr.write(\"HyperMemory PLUGIN_ROOT missing\\n\") and sys.exit(2)); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and (sys.stderr.write(\"HyperMemory hook missing\\n\") and sys.exit(2)); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' post-tool",
+            "timeout": 5
           }
         ]
       }
@@ -18,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and sys.exit(0); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and sys.exit(0); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' stop",
+            "command": "python3 -c 'import os,pathlib,re,runpy,sys; root=os.environ.get(\"PLUGIN_ROOT\"); not root and (sys.stderr.write(\"HyperMemory PLUGIN_ROOT missing\\n\") and sys.exit(2)); base=pathlib.Path(root).parent; candidates=[p for p in base.glob(\"*/scripts/hypermemory_hook.py\") if p.is_file()]; script=max(candidates,key=lambda p:tuple(int(x) for x in re.findall(r\"\\d+\",p.parent.parent.name)),default=None); script is None and (sys.stderr.write(\"HyperMemory hook missing\\n\") and sys.exit(2)); os.environ[\"PLUGIN_ROOT\"]=str(script.parent.parent); sys.argv=[str(script),sys.argv[1]]; runpy.run_path(str(script),run_name=\"__main__\")' stop",
             "timeout": 5
           }
         ]

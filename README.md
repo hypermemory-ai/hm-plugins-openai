@@ -53,7 +53,7 @@ installable OpenAI plugins:
 
 | Plugin | Package ID | Current version | Purpose |
 | --- | --- | ---: | --- |
-| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.9.2` | Persistent personal and project memory, relationship-aware recall, quality-gated delegated writes, timeline logging, and token telemetry |
+| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.11.0` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
 | **HyperColab** | `hypercolab@hypermemory-ai` | `2.8.0` | Shared project context, work ownership, path claims, project timelines, graph search, and multi-agent collision prevention |
 
 The marketplace is named `hypermemory-ai`. A marketplace is a catalog and
@@ -196,9 +196,9 @@ knowledge after the requested work is complete.
 | MCP configuration | `plugins/hypermemory/.mcp.json` | Connects to the hosted staging MCP over HTTP |
 | Main-agent skill | `plugins/hypermemory/skills/hypermemory/` | Defines recall and bounded local handoffs |
 | Memory-writer skill | `plugins/hypermemory/skills/memory-writer/` | Post-response durable graph work with implicit invocation disabled |
-| Lifecycle hooks | `plugins/hypermemory/hooks/hooks.json` | Requests recall and prepares per-turn telemetry jobs before model work |
+| Lifecycle hooks | `plugins/hypermemory/hooks/hooks.json` | Injects the full skill, gates tools on verified reads, and rejects incomplete turns |
 | Memory-writer role | `plugins/hypermemory/agents/memory-writer.md` | Completion-worker role that loads the versioned memory-writer skill |
-| Hook bridge | `plugins/hypermemory/scripts/hypermemory_hook.py` | Prepares jobs and captures the public answer at Stop without continuations |
+| Hook bridge | `plugins/hypermemory/scripts/hypermemory_hook.py` | Maintains read receipts and verifies the contract before Stop accepts an answer |
 | Turn finalizer | `plugins/hypermemory/scripts/codex_turn_finalizer.py` | Gates writes on completed answers, queues retries, and prevents duplicate claims |
 | Completion worker | `plugins/hypermemory/scripts/codex_completion_worker.py` | Dispatches only after completion, gates the writer, and logs without a model |
 | Native transport | `plugins/hypermemory/scripts/codex_memory_transport.py` | Reuses Codex OAuth in an ephemeral background session |
@@ -216,11 +216,16 @@ sequenceDiagram
     participant MCP as HyperMemory MCP
 
     U->>M: Submit a prompt
+    Note over M: Full skill injected
+    M->>MCP: Overview once per conversation
     M->>MCP: Recall relevant context
+    Note over M: Other tools blocked until reads succeed
     M->>M: Complete requested work
     M->>Q: Stage bounded evidence (no agent)
-    M-->>U: Deliver final answer
-    Q->>H: Stop captures the completed answer
+    M->>H: Stop verifies receipts and contract
+    H-->>M: Continue if verification fails
+    M-->>U: Deliver verified final answer
+    Q->>H: Stop captures the accepted answer
     H->>Q: Claim this completed turn once
     alt Durable candidates or explicit memory instruction
         H->>W: Supply completed evidence
@@ -332,11 +337,13 @@ supported exact usage source, token reporting is unavailable; no estimate is sub
 
 HyperMemory uses three complementary layers:
 
-1. The skill declares itself applicable on every turn.
-2. `UserPromptSubmit` requests recall and prepares the token-listener job. Its
-   first invocation establishes the session baseline. There is no HyperMemory
-   `SessionStart` hook and no instruction to conceal HyperMemory use.
-3. The main agent stages bounded evidence. Stop captures the final answer,
+1. `SessionStart` and `UserPromptSubmit` inject the complete skill; the prompt
+   hook also prepares the exact per-turn enforcement and token-listener job.
+2. `PreToolUse` denies non-memory tools until `PostToolUse` has recorded
+   successful overview and recall receipts. Overview is required once per
+   conversation and recall on every substantive turn.
+3. The main agent stages bounded evidence. Stop validates both receipts and the
+   complete contract, forcing a continuation when either is missing. It then captures the final answer,
    then dispatches the completion handler. Empty durable work skips the model
    writer; timeline and token bookkeeping run independently. Duplicate completion
    events cannot dispatch twice, and partial remote writes require review.
@@ -347,12 +354,11 @@ for existing sessions whose hook registry lacks Stop. The transcript format is
 not a stable API; unknown events leave jobs pending. Completed jobs remove local
 answer excerpts and contracts, retaining only a duplicate-prevention marker.
 
-This is the strongest enforcement available to an installed plugin, but it is
-not an operating-system guarantee. If the plugin is disabled, its hooks are not
-trusted, hooks are disabled by policy, the MCP is unavailable, or the current
-surface cannot run the native Codex completion worker, behavior degrades accordingly. The skill
-keeps recall available when possible and does not claim that background
-persistence occurred when delegation is unavailable.
+This enforcement operates only where local Codex plugin hooks are enabled and
+trusted. If the plugin is disabled, its hooks are untrusted, or hooks are
+disabled by policy, no plugin can enforce the lifecycle. When enforcement is
+active, hook errors and unavailable required MCP reads block the turn instead
+of silently degrading or accepting an unverified claim.
 
 ## HyperColab
 
@@ -601,9 +607,9 @@ pipx upgrade hypercolab
 
 Review hooks again if their definitions changed.
 
-HyperMemory lifecycle preparation fails open: a local hook error is reported
-for diagnosis, but the hook returns valid non-blocking output so the user's
-turn continues without claiming that lifecycle or token preparation succeeded.
+HyperMemory lifecycle enforcement fails closed: a local hook error is reported
+and the affected prompt, tool, or Stop event is blocked rather than accepting
+an unverified turn.
 Hook commands resolve the currently installed plugin version at execution time,
 so updating the plugin cannot leave an active task pointing at a deleted cache
 directory from the previous version.

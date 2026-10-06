@@ -25,6 +25,18 @@ def _module(path: Path, name: str):
     return module
 
 
+def _run_hook(event: str, payload: dict, env: dict) -> dict:
+    result = subprocess.run(
+        [sys.executable, str(HOOK), event],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    return json.loads(result.stdout)
+
+
 def _embedded_contract(skill: str) -> dict:
     block = skill.split("```json\n", 1)[1].split("\n```", 1)[0]
     return json.loads(block)
@@ -76,7 +88,7 @@ def _write_rollout(
 def test_plugin_is_chatgpt_and_codex_only() -> None:
     manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text())
     assert manifest["name"] == "hypermemory"
-    assert manifest["version"].split("+", 1)[0] == "2.10.3"
+    assert manifest["version"].split("+", 1)[0] == "2.11.0"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert "hooks" not in manifest  # default hooks/hooks.json is auto-discovered
     assert (PLUGIN / "hooks" / "hooks.json").is_file()
@@ -133,18 +145,26 @@ def test_plugin_is_chatgpt_and_codex_only() -> None:
     assert "Invoke `$memory-writer`" in writer_agent
     assert "sole detailed operating contract" in writer_agent
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
-    assert set(hooks) == {"UserPromptSubmit", "Stop"}
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+    assert hooks["PreToolUse"][0]["matcher"] == ".*"
+    assert hooks["PostToolUse"][0]["matcher"] == "^mcp__hypermemory__(hm_get_overview|hm_recall)$"
     assert all(
         handler["type"] == "command" and "prompt" not in handler and "statusMessage" not in handler
         for groups in hooks.values()
         for group in groups
         for handler in group["hooks"]
     )
+    assert all(
+        "sys.exit(2)" in handler["command"] and "sys.exit(0)" not in handler["command"]
+        for groups in hooks.values()
+        for group in groups
+        for handler in group["hooks"]
+    )
 
 
-def test_two_hooks_work_without_session_start_and_preserve_baseline(tmp_path):
+def test_hooks_inject_the_full_skill_and_preserve_baseline(tmp_path):
     hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"]
-    assert set(hooks) == {"UserPromptSubmit", "Stop"}
+    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
     rollout = tmp_path / "rollout-test.jsonl"
     _write_rollout(
         rollout, physical_id="session-1", logical_id="session-1", total=100, input_tokens=80, output_tokens=20
@@ -162,6 +182,18 @@ def test_two_hooks_work_without_session_start_and_preserve_baseline(tmp_path):
         "transcript_path": str(rollout),
         "model": "gpt-test",
     }
+    session = subprocess.run(
+        hooks["SessionStart"][0]["hooks"][0]["command"],
+        shell=True,
+        input=json.dumps({**payload, "source": "startup"}),
+        text=True,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    assert (PLUGIN / "skills" / "hypermemory" / "SKILL.md").read_text() in json.loads(session.stdout)[
+        "hookSpecificOutput"
+    ]["additionalContext"]
     command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
     first = subprocess.run(
         command, shell=True, input=json.dumps(payload), text=True, capture_output=True, check=True, env=env
@@ -169,6 +201,7 @@ def test_two_hooks_work_without_session_start_and_preserve_baseline(tmp_path):
     context = json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "call hm_recall before substantive work" in context
     assert "Do not hide HyperMemory use or failures" in context
+    assert (PLUGIN / "skills" / "hypermemory" / "SKILL.md").read_text() in context
     state_path = tmp_path / "data" / "token-state.json"
     before = json.loads(state_path.read_text())
     assert before["sessions"]["session-1"]["rollouts"]["session-1"]["total_tokens"] == 100
@@ -211,7 +244,7 @@ def test_mcp_uses_rust_stage_oauth_endpoint() -> None:
     assert config == {"mcpServers": {"hypermemory": {"type": "http", "url": "https://stage.hypermemory.io/mcp"}}}
 
 
-def test_user_prompt_prepares_hidden_job_and_stop_never_continues_turn(tmp_path: Path) -> None:
+def test_user_prompt_prepares_enforcement_ledger_and_stop_blocks_missing_work(tmp_path: Path) -> None:
     env = {**os.environ, "PLUGIN_ROOT": str(PLUGIN), "PLUGIN_DATA": str(tmp_path)}
     base = {
         "session_id": "session-1",
@@ -253,6 +286,9 @@ def test_user_prompt_prepares_hidden_job_and_stop_never_continues_turn(tmp_path:
     assert job["session_id"] == "session-1"
     assert job["turn_id"] == "turn-1"
     assert job["lifecycle"] == "post_response"
+    assert job["enforcement"]["overview_required"] is True
+    assert job["enforcement"]["recall_required"] is True
+    assert job["enforcement"]["tool_receipts"] == []
 
     stopped = subprocess.run(
         [sys.executable, str(HOOK), "stop"],
@@ -262,8 +298,10 @@ def test_user_prompt_prepares_hidden_job_and_stop_never_continues_turn(tmp_path:
         check=True,
         env=env,
     )
-    assert json.loads(stopped.stdout) == {"continue": True}
-    assert "decision" not in json.loads(stopped.stdout)
+    stop_result = json.loads(stopped.stdout)
+    assert stop_result["decision"] == "block"
+    assert "missing successful mcp__hypermemory__hm_get_overview receipt" in stop_result["reason"]
+    assert "missing staged turn contract" in stop_result["reason"]
 
 
 def test_hook_failures_are_explicit_without_a_substitute_path(tmp_path):
@@ -272,9 +310,143 @@ def test_hook_failures_are_explicit_without_a_substitute_path(tmp_path):
         failed = subprocess.run(
             [sys.executable, str(HOOK), event], input="not-json", text=True, capture_output=True, env=env
         )
-        assert failed.returncode == 1
-        assert "failed" in json.loads(failed.stdout)["systemMessage"]
-        assert "decision" not in json.loads(failed.stdout)
+        assert failed.returncode == 0
+        output = json.loads(failed.stdout)
+        assert "failed" in output["systemMessage"]
+        assert output["decision"] == "block"
+
+
+def test_tool_gates_record_receipts_and_stop_verifies_the_exact_contract(tmp_path: Path) -> None:
+    env = {**os.environ, "PLUGIN_ROOT": str(PLUGIN), "PLUGIN_DATA": str(tmp_path)}
+    base = {
+        "session_id": "session-1",
+        "turn_id": "turn-1",
+        "transcript_path": str(tmp_path / "rollout.jsonl"),
+        "model": "gpt-test",
+        "prompt": "Fix CI",
+    }
+    (tmp_path / "rollout.jsonl").write_text("")
+    _run_hook("user-prompt", base, env)
+
+    denied = _run_hook("pre-tool", {**base, "tool_name": "Bash", "tool_use_id": "call-bash"}, env)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "hm_get_overview" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert (
+        _run_hook(
+            "pre-tool",
+            {
+                **base,
+                "tool_name": "functions.exec",
+                "tool_use_id": "code-mode-1",
+                "tool_input": {"code": "await tools.mcp__hypermemory__hm_get_overview({})"},
+            },
+            env,
+        )
+        == {}
+    )
+    assert _run_hook(
+        "pre-tool", {**base, "tool_name": "mcp__hypermemory__hm_get_overview", "tool_use_id": "call-1"}, env
+    ) == {}
+    assert _run_hook(
+        "post-tool",
+        {
+            **base,
+            "tool_name": "mcp__hypermemory__hm_get_overview",
+            "tool_use_id": "call-1",
+            "tool_response": {"structuredContent": {"nodes": 1}, "isError": False},
+        },
+        env,
+    ) == {}
+
+    denied = _run_hook("pre-tool", {**base, "tool_name": "Bash", "tool_use_id": "call-bash-2"}, env)
+    assert "hm_recall" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    failed = _run_hook(
+        "post-tool",
+        {
+            **base,
+            "tool_name": "mcp__hypermemory__hm_recall",
+            "tool_use_id": "call-2",
+            "tool_response": {"content": [], "isError": True},
+        },
+        env,
+    )
+    assert failed["decision"] == "block"
+    assert _run_hook(
+        "post-tool",
+        {
+            **base,
+            "tool_name": "mcp__hypermemory__hm_recall",
+            "tool_use_id": "call-3",
+            "tool_response": {"structuredContent": {"count": 0}, "isError": False},
+        },
+        env,
+    ) == {}
+    assert _run_hook("pre-tool", {**base, "tool_name": "Bash", "tool_use_id": "call-bash-3"}, env) == {}
+
+    job = tmp_path / "jobs" / "turn-session-1-turn-1.json"
+    ledger = json.loads(job.read_text())["enforcement"]
+    assert ledger["overview_verified"] is True
+    assert ledger["recall_verified"] is True
+    assert [receipt["tool"] for receipt in ledger["tool_receipts"]] == [
+        "mcp__hypermemory__hm_get_overview",
+        "mcp__hypermemory__hm_recall",
+    ]
+
+    finalizer = _module(PLUGIN / "scripts" / "codex_turn_finalizer.py", "strict_hook_finalizer_test")
+    listener = PLUGIN / "scripts" / "codex_token_listener.py"
+    finalizer.enqueue(
+        job,
+        {
+            "schema_version": "2.10.0",
+            "turn_id": "turn-1",
+            "occurred_at": "2026-10-06T10:00:00Z",
+            "active_scope": {"project_key": None, "project_name": "test", "other_anchor_keys": []},
+            "request": {"intent": "Fix CI", "explicit_memory_instruction": None},
+            "outcome": {"status": "completed", "summary": "Fixed CI", "durable_artifacts": []},
+            "durable_candidates": [],
+            "timeline_summary": "Fixed CI and verified the result.",
+            "activity_segments": [{"category": "coding", "weight": 100}],
+            "timeline_only": [],
+            "excluded": [],
+            "token_listener": {"listener_path": str(listener), "job_path": str(job)},
+        },
+    )
+    hook = _module(HOOK, "strict_hook_verifier_test")
+    old_root, old_data = os.environ.get("PLUGIN_ROOT"), os.environ.get("PLUGIN_DATA")
+    os.environ["PLUGIN_ROOT"], os.environ["PLUGIN_DATA"] = str(PLUGIN), str(tmp_path)
+    try:
+        _, failures = hook._stop_failures(base)
+    finally:
+        if old_root is None:
+            os.environ.pop("PLUGIN_ROOT", None)
+        else:
+            os.environ["PLUGIN_ROOT"] = old_root
+        if old_data is None:
+            os.environ.pop("PLUGIN_DATA", None)
+        else:
+            os.environ["PLUGIN_DATA"] = old_data
+    assert failures == []
+
+
+def test_overview_receipt_is_required_once_per_session(tmp_path: Path) -> None:
+    env = {**os.environ, "PLUGIN_ROOT": str(PLUGIN), "PLUGIN_DATA": str(tmp_path)}
+    first = {"session_id": "session-1", "turn_id": "turn-1", "prompt": "First task"}
+    _run_hook("user-prompt", first, env)
+    _run_hook(
+        "post-tool",
+        {
+            **first,
+            "tool_name": "mcp__hypermemory__hm_get_overview",
+            "tool_use_id": "overview-1",
+            "tool_response": {"structuredContent": {"nodes": 1}, "isError": False},
+        },
+        env,
+    )
+    second = {"session_id": "session-1", "turn_id": "turn-2", "prompt": "Second task"}
+    _run_hook("user-prompt", second, env)
+    job = json.loads((tmp_path / "jobs" / "turn-session-1-turn-2.json").read_text())
+    assert job["enforcement"]["overview_required"] is False
+    assert job["enforcement"]["recall_required"] is True
 
 
 def test_lightweight_prompt_classifier_is_narrow(tmp_path: Path) -> None:

@@ -35,10 +35,16 @@ def contract(turn="turn-1"):
     return {
         "schema_version": "2.10.0",
         "turn_id": turn,
-        "outcome": {"summary": "pre-answer summary"},
+        "occurred_at": "2026-10-06T10:00:00Z",
+        "active_scope": {"project_key": None, "project_name": "test", "other_anchor_keys": []},
+        "request": {"intent": "Exercise completed-turn handling", "explicit_memory_instruction": None},
+        "outcome": {"status": "completed", "summary": "pre-answer summary", "durable_artifacts": []},
         "timeline_summary": "Test completion",
         "durable_candidates": [],
         "activity_segments": [{"category": "coding", "weight": 100}],
+        "timeline_only": [],
+        "excluded": [],
+        "token_listener": {"listener_path": "/listener", "job_path": "/job"},
     }
 
 
@@ -179,7 +185,7 @@ def test_reject_mismatched_or_oversized_contract(finalizer, tmp_path):
         finalizer.enqueue(job, {**contract(), "raw": "x" * 32_000})
 
 
-def test_stop_hook_records_answer_without_continuation_or_mcp(finalizer, tmp_path):
+def test_stop_hook_does_not_record_an_unverified_answer(finalizer, tmp_path):
     job = make_job(tmp_path)
     finalizer.enqueue(job, contract())
     env = {**os.environ, "PLUGIN_ROOT": str(SCRIPTS.parent), "PLUGIN_DATA": str(tmp_path)}
@@ -191,7 +197,8 @@ def test_stop_hook_records_answer_without_continuation_or_mcp(finalizer, tmp_pat
             capture_output=True,
             env=env,
         )
-        assert result.returncode == 1
-        assert "systemMessage" in json.loads(result.stdout)
-        assert "decision" not in json.loads(result.stdout)
-    assert finalizer.claim(job, 0)["status"] == "ready"
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert "systemMessage" in output
+        assert output["decision"] == "block"
+    assert finalizer.claim(job, 0)["status"] == "pending"
