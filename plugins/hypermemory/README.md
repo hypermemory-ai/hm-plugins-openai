@@ -76,7 +76,7 @@ hook definition, and trust it; Codex does not run non-managed plugin hooks until
 the user explicitly trusts their current hash.
 
 ChatGPT web local testing requires registering
-`https://stage.hypermemory.io/mcp` in developer mode. A public directory
+`https://api.hypermemory.io/mcp` in developer mode. A public directory
 submission should use the **With MCP** flow and submit this MCP server directly;
 it does not require a checked-in `.app.json`.
 

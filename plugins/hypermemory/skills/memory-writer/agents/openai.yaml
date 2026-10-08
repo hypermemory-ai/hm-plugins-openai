@@ -9,7 +9,7 @@ dependencies:
       value: "hypermemory"
       description: "OAuth-protected HyperMemory graph and token telemetry"
       transport: "streamable_http"
-      url: "https://stage.hypermemory.io/mcp"
+      url: "https://api.hypermemory.io/mcp"
 
 policy:
   allow_implicit_invocation: false

@@ -35,7 +35,7 @@ codex plugin add hypermemory@hypermemory-ai
 The plugin connects to:
 
 ```text
-https://stage.hypermemory.io/mcp
+https://api.hypermemory.io/mcp
 ```
 
 Complete OAuth when prompted. No API key is stored in the plugin package. The
@@ -130,7 +130,7 @@ workspace testing. Public one-click installation for normal ChatGPT and Codex
 users requires publishing through the universal Plugins Directory.
 
 For pre-publication HyperMemory testing in ChatGPT developer mode, register
-`https://stage.hypermemory.io/mcp` and use the bundled HyperMemory main skill
+`https://api.hypermemory.io/mcp` and use the bundled HyperMemory main skill
 plus its parent-only memory-writer skill. Since consumer ChatGPT does not expose
 Codex rollout JSONL counters, HyperMemory uses an uncertainty-labelled token
 estimate there.

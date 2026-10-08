@@ -20,8 +20,8 @@
 
 > [!IMPORTANT]
 > This repository is the Git-backed development marketplace for ChatGPT and
-> Codex. HyperMemory currently connects to the hosted staging MCP at
-> `https://stage.hypermemory.io/mcp`. Public, one-click installation for normal
+> Codex. HyperMemory connects to the production MCP at
+> `https://api.hypermemory.io/mcp`. Public, one-click installation for normal
 > ChatGPT and Codex users requires separate publication of each plugin through
 > OpenAI's universal Plugins Directory.
 
@@ -53,7 +53,7 @@ installable OpenAI plugins:
 
 | Plugin | Package ID | Current version | Purpose |
 | --- | --- | ---: | --- |
-| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.11.1` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
+| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.11.2` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
 | **HyperColab** | `hypercolab@hypermemory-ai` | `2.8.0` | Shared project context, work ownership, path claims, project timelines, graph search, and multi-agent collision prevention |
 
 The marketplace is named `hypermemory-ai`. A marketplace is a catalog and
@@ -290,7 +290,7 @@ user explicitly asks to store a file.
 The plugin connects to:
 
 ```text
-https://stage.hypermemory.io/mcp
+https://api.hypermemory.io/mcp
 ```
 
 The hosted MCP supports authorization-code OAuth with PKCE and refresh tokens.
@@ -753,7 +753,7 @@ start a new task. HyperColab also requires the `hypercolab` executable to be on
 ### HyperMemory OAuth did not open
 
 Invoke a HyperMemory MCP operation and complete the connection flow. Confirm
-the installed MCP URL is `https://stage.hypermemory.io/mcp` and check whether a
+the installed MCP URL is `https://api.hypermemory.io/mcp` and check whether a
 workspace policy blocks the server.
 
 ### HyperColab authentication failed

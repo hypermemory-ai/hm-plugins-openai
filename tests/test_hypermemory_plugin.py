@@ -88,7 +88,7 @@ def _write_rollout(
 def test_plugin_is_chatgpt_and_codex_only() -> None:
     manifest = json.loads((PLUGIN / ".codex-plugin" / "plugin.json").read_text())
     assert manifest["name"] == "hypermemory"
-    assert manifest["version"].split("+", 1)[0] == "2.11.1"
+    assert manifest["version"].split("+", 1)[0] == "2.11.2"
     assert manifest["mcpServers"] == "./.mcp.json"
     assert "hooks" not in manifest  # default hooks/hooks.json is auto-discovered
     assert (PLUGIN / "hooks" / "hooks.json").is_file()
@@ -323,7 +323,7 @@ def test_public_marketplace_is_self_contained() -> None:
 
 def test_mcp_uses_rust_stage_oauth_endpoint() -> None:
     config = json.loads((PLUGIN / ".mcp.json").read_text())
-    assert config == {"mcpServers": {"hypermemory": {"type": "http", "url": "https://stage.hypermemory.io/mcp"}}}
+    assert config == {"mcpServers": {"hypermemory": {"type": "http", "url": "https://api.hypermemory.io/mcp"}}}
 
 
 def test_user_prompt_prepares_enforcement_ledger_and_stop_blocks_missing_work(tmp_path: Path) -> None:
