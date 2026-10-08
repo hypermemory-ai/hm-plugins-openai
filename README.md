@@ -193,7 +193,7 @@ knowledge after the requested work is complete.
 | Component | Path | Responsibility |
 | --- | --- | --- |
 | Plugin manifest | `plugins/hypermemory/.codex-plugin/plugin.json` | Identity, version, discovery metadata, branding, skill path, and MCP declaration |
-| MCP configuration | `plugins/hypermemory/.mcp.json` | Connects to the hosted staging MCP over HTTP |
+| MCP configuration | `plugins/hypermemory/.mcp.json` | Connects to the hosted production MCP over HTTP |
 | Main-agent skill | `plugins/hypermemory/skills/hypermemory/` | Defines recall and bounded local handoffs |
 | Memory-writer skill | `plugins/hypermemory/skills/memory-writer/` | Post-response durable graph work with implicit invocation disabled |
 | Lifecycle hooks | `plugins/hypermemory/hooks/hooks.json` | Injects the full skill, gates tools on verified reads, and rejects incomplete turns |
@@ -839,9 +839,8 @@ universal Plugins Directory.
 
 ### Is the MCP endpoint production?
 
-No. The checked-in HyperMemory configuration currently targets the hosted staging
-endpoint. Treat the package as pre-production until the manifest and docs are
-updated to a production MCP URL.
+Yes. The checked-in HyperMemory configuration targets the hosted production
+endpoint at `https://api.hypermemory.io/mcp`.
 
 ## Documentation
 
