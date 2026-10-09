@@ -307,6 +307,12 @@ Without an exact usage source, token reporting is unavailable. Never invent an
 account identifier, provider event, cost, token count, or uncertainty.
 `cost_quality: unavailable` is required when no cost is supplied.
 
+Segments are a JSON array of `{"category", "weight"}` objects with integer
+weights, for example `[{"category": "coding", "weight": 70}, {"category":
+"memory", "weight": 30}]`. Never send them as a string or as an object map
+such as `{"coding": 70}`: the server rejects both with `/segments ... is not
+of type "array"`.
+
 Activity categories must be unique and total 100. The substantive activity
 (`coding`, `writing`, `research`, `planning`, and so on) should outweigh memory
 and context work when appropriate.

@@ -53,7 +53,7 @@ installable OpenAI plugins:
 
 | Plugin | Package ID | Current version | Purpose |
 | --- | --- | ---: | --- |
-| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.11.2` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
+| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.11.3` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
 | **HyperColab** | `hypercolab@hypermemory-ai` | `2.8.0` | Shared project context, work ownership, path claims, project timelines, graph search, and multi-agent collision prevention |
 
 The marketplace is named `hypermemory-ai`. A marketplace is a catalog and
