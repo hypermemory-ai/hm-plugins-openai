@@ -156,6 +156,8 @@ def test_candidate_writer_receives_actual_answer_and_logs_separately(runtime, tm
         "hm_tokens",
     ]
     assert transport.calls[1][1]["completion"]["answer_excerpt"] == "Final result differs from the draft."
+    # The writer tags its recalls and stores with the parent chat's session.
+    assert transport.calls[1][1]["session_id"] == "parent"
 
 
 def test_repeated_concurrent_stops_only_dispatch_once(runtime, tmp_path, monkeypatch):

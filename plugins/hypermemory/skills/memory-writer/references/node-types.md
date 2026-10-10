@@ -36,14 +36,26 @@ Keys identify durable entities, not turns. Add a date only when time is part of
 the identity, such as a specific event or a versioned decision that must remain
 separate from its successor.
 
+Keys are permanent, so name the subject, never its status: no `_proposed`,
+`_pending`, `_recommended`, `_awaiting`, `_draft` or `_wip`. Write
+`decision_usage_summary_index_read`, not
+`decision_usage_query_rewrite_proposed`; the status lives in `data.status`.
+
 ## Shared data rules
 
 - Omit fields that do not apply.
-- Preserve useful existing fields during updates.
+- Preserve useful existing fields during updates. `hm_update` replaces a
+  node's whole `data` object, so send the full hydrated `data` with your
+  changes.
 - Use ISO dates when an exact date is known; do not invent precision.
 - Put uncertainty in the data rather than obscuring it in prose.
 - Keep arrays specific and deduplicated.
 - Do not store a second narrative summary inside `data`.
+- Commit hashes, image digests, record or user IDs, file paths, hostnames and
+  ports belong in `data`, never in the description.
+- Status that will change (proposed, pending, approved, deployed, declined,
+  superseded) belongs in `data.status`.
+- A correction records in `data` what was corrected and how it was verified.
 
 ## Decision
 
@@ -57,9 +69,14 @@ Use for a committed choice, not a proposal still under discussion.
   "date": "ISO date or known period",
   "reversibility": "low | medium | high",
   "scope": "what the decision governs",
-  "status": "current | superseded"
+  "status": "current | superseded",
+  "open_conflict": "question that settles a possible conflict with a standing preference"
 }
 ```
+
+Set `open_conflict` only while a possible conflict with a standing preference
+is unresolved, and link the decision to that preference with a relationship
+that names the conflict.
 
 ## Event
 
@@ -74,6 +91,10 @@ Use only for a material occurrence with future historical or diagnostic value.
   "impact": "lasting consequence"
 }
 ```
+
+Rules, decisions, risks and lessons the event produced are their own
+`preference`, `decision` and `fact` nodes linked to it. Never list them in the
+event's `data`, and never add a `lesson` field.
 
 ## Concept
 
@@ -165,7 +186,8 @@ visual style.
 ```
 
 Translate feedback into operational rules. Avoid storing a complaint or raw
-quote when the durable value is the instruction it implies.
+quote when the durable value is the instruction it implies. A preference the
+user stated links to `user_profile`.
 
 ## Fact
 

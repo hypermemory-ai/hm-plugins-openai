@@ -53,7 +53,7 @@ installable OpenAI plugins:
 
 | Plugin | Package ID | Current version | Purpose |
 | --- | --- | ---: | --- |
-| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.11.3` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
+| **HyperMemory** | `hypermemory@hypermemory-ai` | `2.12.0` | Fail-closed recall enforcement, persistent personal and project memory, quality-gated delegated writes, timeline logging, and exact token telemetry |
 | **HyperColab** | `hypercolab@hypermemory-ai` | `2.8.0` | Shared project context, work ownership, path claims, project timelines, graph search, and multi-agent collision prevention |
 
 The marketplace is named `hypermemory-ai`. A marketplace is a catalog and
@@ -282,8 +282,12 @@ These are the public tools currently advertised by the hosted MCP through
 
 Writes follow canonical node types and stable keys. The writer recalls before
 changing the graph, updates existing nodes instead of duplicating them, and
-gives each new node a specific relationship. File upload is used only when the
-user explicitly asks to store a file.
+gives each new node a specific relationship. Each user rule, decision, and
+finding becomes its own node with a short description in the user's words; a
+changed status or value is rewritten in every node, edge label, and work
+hyperedge that still states the old one; and a feature, release, incident, or
+investigation keeps one work hyperedge that is reused rather than re-created.
+File upload is used only when the user explicitly asks to store a file.
 
 ### OAuth and credentials
 

@@ -165,6 +165,7 @@ def process(job_path: Path, transport_factory=CodexTransport) -> str:
                     root,
                     {
                         "mode": "completed_hook",
+                        "session_id": job["session_id"],
                         "contract": contract,
                         "completion": ready["completion"],
                     },

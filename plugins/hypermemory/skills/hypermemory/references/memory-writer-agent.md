@@ -10,4 +10,6 @@ answer. Do not call `collaboration.spawn_agent` for memory. The Stop hook owns
 post-response dispatch; it supplies completed evidence to a fresh ephemeral
 writer only when durable candidates or an explicit memory instruction exist.
 The handler performs timeline and token bookkeeping directly without a model.
+It hands the writer the parent session's `session_id` with the completed
+evidence, so the writer's recalls and stores belong to the parent chat.
 Never wait for, poll, inspect, message, or reuse the background writer.

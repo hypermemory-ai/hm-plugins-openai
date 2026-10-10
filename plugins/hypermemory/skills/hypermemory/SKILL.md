@@ -67,6 +67,22 @@ independently retrievable, updateable, contradictable, supersedable, or relatabl
 The source—not a quota—sets breadth and depth. Capture aggressively but truthfully;
 a short answer does not justify omitting durable candidates.
 
+Stage one candidate per thing a later session acts on, even when you mention it
+while telling what you did:
+
+- each rule the user stated: a `preference`, close to verbatim, with its scope;
+- each choice: a `decision` with `facts` chosen, rejected, and rationale;
+- each finding, open risk, or lesson: a `fact`; what happened: an `event`.
+
+Write `request.intent` and each problem in the user's words for what they saw
+or want. Hashes, IDs, paths, hosts, and ports go in `facts`, never in
+`description_draft`. When a status or value changed (approved, deployed,
+declined, superseded; a cutoff, a limit), stage an `update` or `supersede`
+candidate whose `facts.changed` lists each `old → new`, such as
+`"rerank cutoff 0.60 → 0.50"`: the writer rewrites every memory still saying
+the old one. When this turn proved an earlier memory wrong, stage an `update`
+or `forget` candidate with the evidence in `facts`.
+
 ## Codex handoff
 
 The hook supplies `finalizer`, `listener`, and `job`. After work, pass the bounded

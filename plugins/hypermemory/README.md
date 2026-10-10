@@ -18,7 +18,10 @@ MCP server, and Codex lifecycle enforcement. Token reporting requires an exact s
 - Completion hook: after the final answer exists, starts a bounded background
   handler. It invokes the memory writer only for durable candidates or an
   explicit memory instruction. The writer reconciles the actual answer, applies
-  the durability gate, writes justified changes, and verifies them.
+  the durability gate, writes justified changes, and verifies them. It splits
+  user rules, decisions, and findings into their own nodes, propagates changed
+  statuses and values, flags conflicts, reuses each work's hyperedge, and tags
+  its recalls and stores with the parent session.
   Its recall is limited to checking existing memories and conflicts before a
   write. Overview is excluded from the completion transport's enabled tools.
 - Bookkeeping: timeline and exact token reports use direct authenticated MCP
