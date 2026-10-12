@@ -44,6 +44,10 @@ consistent with newer instructions and workspace evidence. Treat `chat_*` links
 only as provenance; exclude them from reasoning, ranking, and traversal. Inspect
 only the best three to five semantic candidates unless more are necessary.
 
+## Organization memory
+
+Organization members get their organization's memory with every `hm_recall` under `organization_memory`; it is read-only. Several organizations: bind each project once in `~/.config/hypermemory/projects.json` (`organization_id` or `"none"`; ask the user when unbound) and send that `organization_id` on every `hm_recall`. Status `selection_required` means ask and bind; `failed` means tell the user. When an admin turns on organization write mode in the dashboard, the server sends their writes to the organization graph and the result carries `write_target`; never pick the target yourself.
+
 ## Direct mutations
 
 For explicit inspection or mutation, retrieve the exact entities, use the proper
