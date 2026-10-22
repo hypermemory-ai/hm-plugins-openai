@@ -6,7 +6,6 @@ ACTIVITY_CATEGORIES = frozenset(
     {
         "reasoning",
         "memory",
-        "context",
         "doc_processing",
         "automation",
         "personal",

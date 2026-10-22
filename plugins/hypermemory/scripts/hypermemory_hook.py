@@ -274,7 +274,7 @@ def user_prompt(payload: dict[str, Any]) -> int:
         "does not start an agent or write remote memory. Include supported durable "
         "candidates covering useful user facts, corrections, decisions and outcomes, "
         "a concise timeline_summary, and activity_segments totalling 100. "
-        "Use only categories: reasoning, memory, context, doc_processing, automation, "
+        "Use only categories: reasoning, memory, doc_processing, automation, "
         "personal, chatting, research, design, calculations, coding, planning, "
         "productivity, writing, unmatched. Do not hide HyperMemory use or failures. "
         "Then deliver your answer. The Stop hook owns "

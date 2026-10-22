@@ -1,6 +1,6 @@
 {
   "name": "hypermemory",
-  "version": "2.13.0+codex.20261012185440",
+  "version": "2.14.0+codex.20261022182851",
   "description": "Fail-closed, relationship-aware memory for ChatGPT and Codex with verified recall, delegated persistence, and exact token telemetry.",
   "author": {
     "name": "HyperMemory AI",

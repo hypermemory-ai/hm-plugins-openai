@@ -134,8 +134,10 @@ Use this complete schema:
 }
 ```
 
-`activity_segments` weights total 100 and use only `reasoning`, `memory`,
-`context`, `doc_processing`, `automation`, `personal`, `chatting`, `research`,
+`activity_segments` weights total 100 and weight the work done; reading files
+and the conversation belongs to the work it served (there is no `context`
+category, the server refuses it). Use only `reasoning`, `memory`,
+`doc_processing`, `automation`, `personal`, `chatting`, `research`,
 `design`, `calculations`, `coding`, `planning`, `productivity`, `writing`, or
 `unmatched`; there is no default or estimate.
 
